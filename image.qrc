@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/pic">
+        <file>image/Calibration pose.png</file>
+        <file>image/Connection status.png</file>
+        <file>image/Initial pose.png</file>
+        <file>image/Level pose.png</file>
+    </qresource>
+</RCC>

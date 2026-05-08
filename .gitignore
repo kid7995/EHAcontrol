@@ -1,0 +1,9 @@
+build/ 
+*.user 
+.qtcreator/ 
+CMakeLists.txt.user 
+*.CSV 
+*.exe 
+*_origin.* 
+*_design.* 
+*.rar 
