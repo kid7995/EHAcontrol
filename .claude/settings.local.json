@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Read(//c/Users/SWR-QY/AppData/Roaming/Claude/local-agent-mode-sessions/skills-plugin/2c8331e7-e133-4c81-9eff-68d851c8a7a7/4fa04e6b-d394-4a71-8687-94a5155d87ac/skills/docx/**)",
+      "Bash(python scripts/office/unpack.py \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\" unpacked_proto/)",
+      "Bash(pandoc unpacked_proto/word/document.xml -f docx -t markdown)",
+      "Bash(python -c \"import xml.etree.ElementTree as ET; tree=ET.parse\\('unpacked_proto/word/document.xml'\\); root=tree.getroot\\(\\); [print\\(e.text\\) for e in root.iter\\(\\) if e.text and e.text.strip\\(\\)]\")",
+      "Bash(python3)",
+      "Bash(cat)",
+      "Bash(python3 /tmp/extract_pdf.py)",
+      "Bash(python3 -c \"import pypdf\")",
+      "Bash(pdftotext -f 1 -l 20 \"D:\\\\Saiwider\\\\技术&项目\\\\003机器人平台相关\\\\KUKA\\\\KST_Ethernet_KRL_31_zh.pdf\" -)",
+      "Bash(pdftotext -f 21 -l 28 \"D:\\\\Saiwider\\\\技术&项目\\\\003机器人平台相关\\\\KUKA\\\\KST_Ethernet_KRL_31_zh.pdf\" -)",
+      "Bash(extract-text \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\")",
+      "Bash(python scripts/office/unpack.py \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\" unpacked_tmp/)",
+      "Bash(pandoc unpacked_tmp/word/document.xml -o - --from docx)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

@@ -57,6 +57,10 @@ private:
     bool m_fadeAnimationActive = false; // 用于防止动画重叠
     void applyFadeAnimation(QTabWidget* tabWidget, int fromIndex, int toIndex);
 
+    // 串口接收缓冲 & 读取到的 PN168 原始K值
+    QByteArray m_serialRxBuffer;
+    double m_pn168K = 0.0;
+
 private slots:
     //标定相关
     void onehaconnectButtonClicked();
@@ -85,5 +89,6 @@ private slots:
     void on_ForwardStep4_clicked(bool checked);
 
     void ontabwidgetindexchanged(int index);
+    void onSerialReadyRead();
 };
 #endif // MAINWINDOW_H

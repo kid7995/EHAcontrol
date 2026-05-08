@@ -67,6 +67,8 @@ void MainWindow::initActions()
             this, &MainWindow::onEHAtestButtonClicked);
     connect(ui->EHAtest_2, &QPushButton::clicked,
             this, &MainWindow::onEHAtestButtonClicked);
+    connect(serial, &QSerialPort::readyRead,
+            this, &MainWindow::onSerialReadyRead);
 }
 
 
@@ -185,11 +187,11 @@ void MainWindow::onEHAtestButtonClicked()
 
     // 定义测试力值序列
     //浮动模块测试
-    // const QVector<quint16> testForces = {20, 40, 60, 80, 100, 120, 140, 160, 180, 200};
-    // const QVector<quint16> testForcesReverse = {200, 180, 160, 140, 120, 100, 80, 60, 40, 20};
+    const QVector<quint16> testForces = {20, 40, 60, 80, 100, 120, 140, 160, 180, 200};
+    const QVector<quint16> testForcesReverse = {200, 180, 160, 140, 120, 100, 80, 60, 40, 20};
     //滚压设备测试
-    const QVector<quint16> testForces = {200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
-    const QVector<quint16> testForcesReverse = {2000, 1800, 1600, 1400, 1200, 1000, 800, 600, 400, 200};
+    // const QVector<quint16> testForces = {200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
+    // const QVector<quint16> testForcesReverse = {2000, 1800, 1600, 1400, 1200, 1000, 800, 600, 400, 200};
     // 存储测量结果(设定力, 实际力)
     QVector<QPair<quint16, quint16>> measurements;
 
@@ -498,119 +500,155 @@ void MainWindow::oneharesetButtonClicked()
     // sendData(168, 94); 由外部操作人员确认168数值
     // sendData(168, 1215);
     sendData(169, 0);
-    sendData(46, 128);
-    sendData(47, 0);
-    sendData(52, 128);
-    sendData(53, 0);
-    sendData(152, 0);
     ui->textEdit->append("内参初始化完毕");
     //质量清零
     sendData(48, 0);
     sendData(170, 0);
     ui->textEdit->append("质量初始化完毕");
     //pn102清零
-    sendData(44, 1000);
+    sendData(44, 200);
     MainWindow::delayMS(4000);
     sendData(102, 1);
     sendData(102, 0);
     sendData(44, 0);
     sendData(2,81); //数显屏设置为显示位移量
     ui->textEdit->append("设定力初始化完毕\n标定时设备需接触力传感器，并下压至数显屏数值在0(位移零点)左右");
+
+    // 发送全参数读取命令，自动获取 PN168 原始K值
+    ui->textEdit->append("正在读取 PN168...");
+    m_serialRxBuffer.clear();
+    QByteArray readCmd;
+    readCmd.append((char)0x55);
+    readCmd.append((char)0x55);
+    readCmd.append((char)0xB9);
+    readCmd.append((char)0x9B);
+    readCmd.append((char)0x9B);
+    readCmd.append((char)0xB9);
+    readCmd.append((char)0xAA);
+    readCmd.append((char)0xAA);
+    serial->write(readCmd);
+    delayMS(300); // 等待设备返回全量参数（200×8字节，115200波特约需111ms）
+
+    // 解析回包，查找 Pn168 帧格式: 55 55 00 A8 ValH ValL AA AA
+    m_pn168K = 0.0;
+    for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
+        if ((quint8)m_serialRxBuffer[i]   == 0x55 &&
+            (quint8)m_serialRxBuffer[i+1] == 0x55 &&
+            (quint8)m_serialRxBuffer[i+2] == 0x00 &&
+            (quint8)m_serialRxBuffer[i+3] == 0xA8 &&
+            (quint8)m_serialRxBuffer[i+6] == 0xAA &&
+            (quint8)m_serialRxBuffer[i+7] == 0xAA) {
+            m_pn168K = ((quint8)m_serialRxBuffer[i+4] << 8)
+                     |  (quint8)m_serialRxBuffer[i+5];
+            ui->textEdit->append(QString("PN168 读取成功，原始K值: %1").arg(m_pn168K));
+            break;
+        }
+    }
+    if (m_pn168K < 1.0) {
+        ui->textEdit->append(QString("警告：PN168 自动读取失败（收到 %1 字节），标定将无法执行")
+                                 .arg(m_serialRxBuffer.size()));
+    }
+
     // 启用标定按钮
     ui->EHAcalibration->setEnabled(true);
 }
 void MainWindow::onehacalibrationButtonClicked()
 {
-    // 1. 力值归零初始化
+    if (!serial->isOpen()) {
+        ui->textEdit->append("错误：请先连接串口！");
+        return;
+    }
+
+    // 使用初始化阶段读取到的 PN168 原始K值
+    if (m_pn168K < 1.0) {
+        ui->textEdit->append("错误：PN168 原始K值未获取，请先执行步骤二（EHA初始化）！");
+        return;
+    }
+    double K_original = m_pn168K;
+
     settleForce(0);
     ui->textEdit->clear();
-    ui->textEdit->append("步骤三:启动标定流程...");
-    //倒序补偿检测
-    // Compensation= ui->Compensation->isChecked();
-    Compensation= true;
+    ui->textEdit->append("步骤三:启动线性标定流程...");
+    ui->textEdit->append(QString("原始K值(PN168): %1").arg(K_original));
 
-    // 2. 定义标定力值序列和对应的PN参数映射
-    //ECM滚压设备测试
-    const QVector<quint16> targetForces = {1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 9999};
-    //浮动模块测试
-    // const QVector<quint16> targetForces = {20, 40, 60, 80, 100, 120, 140, 160, 180, 200};
+    // 标定力值序列 10N ~ 100N，步进 10N
+    const QVector<quint16> forces = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
 
-    const QVector<quint16> pnParameters = {140, 141, 142, 143, 144, 145, 146, 147, 148, 149};
-
-    // 2.1 定义倒序力值序列和对应的PN参数映射
-    //ECM滚压设备测试
-    const QVector<quint16> targetForcesReverse = {9999, 9000, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000};
-    //浮动模块测试
-    // const QVector<quint16> targetForcesReverse = {200, 180, 160, 140, 120, 100, 80, 60, 40, 20};
-
-    const QVector<quint16> pnParametersReverse = {189, 188, 187, 186, 185, 184, 183, 182, 181, 180};
-
-    // 4. 标定主循环
-    for(int i = 0; i < targetForces.size(); i++) {
-        quint16 currentForce = targetForces[i];
-        quint16 currentPN = pnParameters[i];
-
-        // 4.1 设置目标力值
-        settleForce(currentForce);
-
-        // 4.2 等待2000ms让系统稳定
+    // 正向采集 10N → 100N
+    QVector<double> forwardActual(forces.size(), 0.0);
+    ui->textEdit->append("\n[正向采集] 10N → 100N:");
+    for (int i = 0; i < forces.size(); ++i) {
+        settleForce(forces[i]);
         MainWindow::delayMS(2000);
-
-        // 4.3 读取力传感器实际测量值
-        // uint16_t sensorData[2] = {0};
-        bool readSuccess = (sensorforceValue);
-
-        if(!readSuccess) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
-            ui->textEdit->append(QString("实际力: %1").arg(sensorforceValue/10.0));
-            continue;  // 跳过当前力值，继续下一个
-        }
-
-        // 4.4 获取实际力值（假设数据在第一个寄存器）
-        // quint16 actualForce = sensorData[1];
-        quint16 actualForce = sensorforceValue/10.0;
-
-        ui->textEdit->append(QString("实际力: %1").arg(actualForce));
-
-        // 4.5 将实际力值写入对应PN参数
-        actualForce-=10;
-        sendData(currentPN, actualForce);
-
-        // ui->textEdit->append(QString("保存到PN%1").arg(currentPN));
+        forwardActual[i] = sensorforceValue / 10.0;
+        ui->textEdit->append(QString("  设定 %1N → 实际 %2N")
+                                 .arg(forces[i])
+                                 .arg(forwardActual[i], 0, 'f', 1));
     }
 
-    if (Compensation) {
-        for (int i = 0; i < targetForcesReverse.size(); ++i) {
-            quint16 currentForce = targetForcesReverse[i];
-            quint16 currentPN = pnParametersReverse[i];
-
-            settleForce(currentForce);
-            MainWindow::delayMS(2000);
-
-            // uint16_t sensorData[2] = {0};
-            bool readSuccess = (sensorforceValue);
-
-            if (!readSuccess) {
-                ui->textEdit->append("错误：无法读取到传感器数值!");
-                // ui->textEdit->append(QString("实际力: %1").arg(sensorforceValue));
-                continue;
-            }
-
-            // quint16 actualForce = sensorData[1];
-            quint16 actualForce = sensorforceValue/10.0;
-            ui->textEdit->append(QString("实际力: %1").arg(actualForce));
-            sendData(currentPN, actualForce);
-            // ui->textEdit->append(QString("保存到PN%1").arg(currentPN));
-        }
+    // 反向采集 100N → 10N，结果按正序（对应 forces[i]）存储
+    QVector<double> reverseActual(forces.size(), 0.0);
+    ui->textEdit->append("\n[反向采集] 100N → 10N:");
+    for (int i = forces.size() - 1; i >= 0; --i) {
+        settleForce(forces[i]);
+        MainWindow::delayMS(2000);
+        reverseActual[i] = sensorforceValue / 10.0;
+        ui->textEdit->append(QString("  设定 %1N → 实际 %2N")
+                                 .arg(forces[i])
+                                 .arg(reverseActual[i], 0, 'f', 1));
     }
 
-    // 5.标定完成
-    ui->textEdit->append("\n数据录入完毕,设备调节为力控模式");
-    ui->textEdit->append("\n步骤四：操作机器人 滚压设备调整为水平姿态(数显屏数值为0) 执行力矩清零");
-    // 6.标定后输出力清零
+    // 构建拟合点集
+    // x = 正反向平均实际力
+    // y = 模块内部识别数值 = K_original / 10 * 设定力
+    ui->textEdit->append("\n[拟合数据]  设定力 | 平均实际力 | 内部识别值");
+    QVector<double> xVec, yVec;
+    for (int i = 0; i < forces.size(); ++i) {
+        double avgForce    = (forwardActual[i] + reverseActual[i]) / 2.0;
+        double internalVal = K_original / 10.0 * forces[i];
+        xVec.append(avgForce);
+        yVec.append(internalVal);
+        ui->textEdit->append(QString("  %1N | %2N | %3")
+                                 .arg(forces[i],    4)
+                                 .arg(avgForce,     7, 'f', 1)
+                                 .arg(internalVal,  9, 'f', 1));
+    }
+
+    // 最小二乘线性拟合: y = new_K * x + new_B
+    int    n     = xVec.size();
+    double sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
+    for (int i = 0; i < n; ++i) {
+        sum_x  += xVec[i];
+        sum_y  += yVec[i];
+        sum_xy += xVec[i] * yVec[i];
+        sum_x2 += xVec[i] * xVec[i];
+    }
+    double denom = n * sum_x2 - sum_x * sum_x;
+    if (qAbs(denom) < 1e-9) {
+        ui->textEdit->append("错误：线性拟合失败，数据点无效！");
+        settleForce(0);
+        return;
+    }
+    double new_K = (n * sum_xy - sum_x * sum_y) / denom;
+    double new_B = (sum_y - new_K * sum_x) / n;
+
+    ui->textEdit->append("\n[拟合结果]");
+    ui->textEdit->append(QString("  新K值 = %1  (写入PN168)").arg(new_K, 0, 'f', 4));
+    ui->textEdit->append(QString("  新B值 = %1  (写入PN169)").arg(new_B, 0, 'f', 4));
+
+    // 写入设备：K四舍五入取整写PN168，B按有符号16位写PN169
+    quint16 K_write = static_cast<quint16>(qRound(new_K));
+    quint16 B_write = static_cast<quint16>(static_cast<int16_t>(qRound(new_B)));
+    sendData(168, K_write);
+    sendData(169, B_write);
+    ui->textEdit->append(QString("  PN168 ← %1").arg(K_write));
+    ui->textEdit->append(QString("  PN169 ← %1").arg(static_cast<int16_t>(B_write)));
+
     settleForce(0);
-    sendData(152,1);
-    sendData(2,79);
+    sendData(152, 1);
+    sendData(2, 79);
+    ui->textEdit->append("\n数据录入完毕，设备调节为力控模式");
+    ui->textEdit->append("步骤四：操作机器人，滚压设备调整为水平姿态（数显屏数值为0），执行力矩清零");
     ui->EHAzero->setEnabled(true);
 }
 
@@ -747,7 +785,6 @@ void MainWindow::parseModbusResponse(const QByteArray &data)
             quint8 secondLastByte = data[data.length()-2];
             // sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
             sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
-            // ui->textEdit->append(QString::number(sensorforceValue));
         }
     }
 }
@@ -794,6 +831,29 @@ void MainWindow::on_ForwardStep3_clicked(bool checked) {
 
 void MainWindow::on_ForwardStep4_clicked(bool checked) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
+}
+
+void MainWindow::onSerialReadyRead()
+{
+    m_serialRxBuffer.append(serial->readAll());
+
+    // 解析设备推流的参数监视帧: EF AD AB 07 [ValH] [ValL] ?? ??
+    // 写入 Pn002=79 后，该帧内容为实时力值（有符号，单位 N）
+    for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
+        if ((quint8)m_serialRxBuffer[i]   == 0xEF &&
+            (quint8)m_serialRxBuffer[i+1] == 0xAD &&
+            (quint8)m_serialRxBuffer[i+2] == 0xAB &&
+            (quint8)m_serialRxBuffer[i+3] == 0x07) {
+            int16_t forceRaw = (int16_t)(((quint8)m_serialRxBuffer[i+4] << 8) |
+                                          (quint8)m_serialRxBuffer[i+5]);
+            ui->EHAforceR->setText(QString::number(forceRaw) + " N");
+        }
+    }
+
+    // 防止缓冲区无限增长，保留后 2KB 供帧解析
+    if (m_serialRxBuffer.size() > 4096) {
+        m_serialRxBuffer.remove(0, m_serialRxBuffer.size() - 2048);
+    }
 }
 
 // 通用的淡入淡出动画函数
