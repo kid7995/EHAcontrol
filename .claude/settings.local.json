@@ -19,7 +19,10 @@
       "Bash(cmake -B build_check -G \"Ninja\" -DCMAKE_PREFIX_PATH=\"C:/Qt/6.8.3/msvc2022_64\")",
       "Bash(where cmake *)",
       "Read(//c/Qt/**)",
-      "Bash(\"C:\\\\Qt\\\\Tools\\\\CMake_64\\\\bin\\\\cmake.exe\" -B build_check -G \"Ninja\" -DCMAKE_PREFIX_PATH=\"C:/Qt/6.8.1/msvc2022_64\" -DCMAKE_MAKE_PROGRAM=\"C:/Qt/Tools/Ninja/ninja.exe\")"
+      "Bash(\"C:\\\\Qt\\\\Tools\\\\CMake_64\\\\bin\\\\cmake.exe\" -B build_check -G \"Ninja\" -DCMAKE_PREFIX_PATH=\"C:/Qt/6.8.1/msvc2022_64\" -DCMAKE_MAKE_PROGRAM=\"C:/Qt/Tools/Ninja/ninja.exe\")",
+      "mcp__Desktop_Commander__read_file",
+      "Bash(cat \"D:/Saiwider/Code/C++/vision-basic-gi/device/Binarykk/src/Main.dat\" 2>&1 | head -100)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Saiwider\\\\Code\\\\Qt\\\\EHAcontrol\" -Recurse -File | Where-Object { $_.Extension -in @\\('.h', '.cpp', '.ui', '.xml', '.sub', '.src', '.dat', '.pro', '.json'\\) -or $_.Name -eq 'CMakeLists.txt' } | Select-Object FullName | Sort-Object FullName)"
     ]
   }
 }

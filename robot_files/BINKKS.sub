@@ -1,74 +1,79 @@
 &ACCESS RVP
-&COMMENT EHA标定系统 - 状态上报 Submit 程序（12ms 周期）
+&COMMENT USER specified PLC program
 DEF BINKKS()
 
-    DECL EKI_STATUS RET
-    DECL CHAR BYTES[64]
-    INT I, OFFSET, Temp
-    BOOL PRO_MOVE
-    CHAR ACT_ADVANCE, ADVANCE, ACTBase, ACTTool
+   DECL EKI_STATUS RET
+   DECL CHAR BYTES[64]
+   INT I
+   INT OFFSET
+   BOOL PRO_MOVE
+   CHAR ACT_ADVANCE, ADVANCE, ACTBase, ACTTool
+   INT Temp
 
-    ; 等待坐标系/工具就绪
-    INIT:
-    FOR I=1 TO 64
-        BYTES[I]=0
-    ENDFOR
-    IF (($ACT_BASE==-1) OR ($ACT_TOOL==-1)) THEN
-        GOTO INIT
-    ENDIF
+   INIT:
+   I = 1
+   OFFSET = 0
+   FOR I = 1 TO 64
+      BYTES[I] = 0
+   ENDFOR
 
-    ; 初始化 EKI 通道并建立连接
-    CONNECT:
-    RET=EKI_INIT("BINKKS")
-    ON_ERROR_PROCEED
-    RET=EKI_OPEN("BINKKS")
+   IF (($ACT_BASE == -1) OR ($ACT_TOOL == -1)) THEN
+      GOTO INIT
+   ENDIF
 
-    LOOP
-        INIT2:
-        IF (($ACT_BASE==-1) OR ($ACT_TOOL==-1)) THEN
-            WAIT SEC 0.5
-            GOTO INIT2
-        ENDIF
+   CONNECT:
+   RET = EKI_INIT("BINKKS")
+   ON_ERROR_PROCEED
+   RET = EKI_OPEN("BINKKS")
 
-        ; 打包笛卡尔位置 [0~23]
-        OFFSET = 0
-        CAST_TO(BYTES[],OFFSET,
-            $POS_ACT_MES.X, $POS_ACT_MES.Y, $POS_ACT_MES.Z,
-            $POS_ACT_MES.A, $POS_ACT_MES.B, $POS_ACT_MES.C)
+   LOOP
+      INIT2:
+      IF (($ACT_BASE == -1) OR ($ACT_TOOL == -1)) THEN
+         WAIT SEC 0.5
+         GOTO INIT2
+      ENDIF
 
-        ; 打包关节角度 [24~47]
-        CAST_TO(BYTES[],OFFSET,
-            $AXIS_ACT_MEAS.A1, $AXIS_ACT_MEAS.A2, $AXIS_ACT_MEAS.A3,
-            $AXIS_ACT_MEAS.A4, $AXIS_ACT_MEAS.A5, $AXIS_ACT_MEAS.A6)
+      OFFSET = 0
 
-        ; 打包状态字节 [48~52]
-        PRO_MOVE = $PRO_MOVE
-        Temp = $ACT_ADVANCE
-        ACT_ADVANCE = Temp
-        Temp = $ADVANCE
-        ADVANCE = Temp
-        IF ($ACT_BASE<>-1) THEN
-            Temp = $ACT_BASE
-            ACTBase = Temp
-        ENDIF
-        IF ($ACT_TOOL<>-1) THEN
-            Temp = $ACT_TOOL
-            ACTTool = Temp
-        ENDIF
-        CAST_TO(BYTES[],OFFSET, PRO_MOVE, ACT_ADVANCE, ADVANCE, ACTBase, ACTTool)
+      ; 打包笛卡尔位置 [0~23]
+      CAST_TO(BYTES[], OFFSET,
+         $POS_ACT_MES.X, $POS_ACT_MES.Y, $POS_ACT_MES.Z,
+         $POS_ACT_MES.A, $POS_ACT_MES.B, $POS_ACT_MES.C)
 
-        ON_ERROR_PROCEED
-        RET = EKI_SEND("BINKKS", BYTES[])
+      ; 打包关节角度 [24~47]
+      CAST_TO(BYTES[], OFFSET,
+         $AXIS_ACT_MEAS.A1, $AXIS_ACT_MEAS.A2, $AXIS_ACT_MEAS.A3,
+         $AXIS_ACT_MEAS.A4, $AXIS_ACT_MEAS.A5, $AXIS_ACT_MEAS.A6)
 
-        ; 断线重连
-        IF (NOT RET.CONNECTED) OR ($ERR.NUMBER > 0) THEN
-            RET=EKI_CLOSE("BINKKS")
-            RET=EKI_CLEAR("BINKKS")
-            WAIT SEC 2
-            GOTO CONNECT
-        ENDIF
+      ; 打包状态字节 [48~52]
+      PRO_MOVE = $PRO_MOVE
+      Temp = $ACT_ADVANCE
+      ACT_ADVANCE = Temp
+      Temp = $ADVANCE
+      ADVANCE = Temp
+      IF ($ACT_BASE <> -1) THEN
+         Temp = $ACT_BASE
+         ACTBase = Temp
+      ENDIF
+      IF ($ACT_TOOL <> -1) THEN
+         Temp = $ACT_TOOL
+         ACTTool = Temp
+      ENDIF
+      CAST_TO(BYTES[], OFFSET, PRO_MOVE, ACT_ADVANCE, ADVANCE, ACTBase, ACTTool)
 
-        WAIT SEC 0.012   ; 12ms 上报周期
-    ENDLOOP
+      ON_ERROR_PROCEED
+      RET = EKI_SEND("BINKKS", BYTES[])
+
+      ; 断线重连
+      IF (NOT RET.CONNECTED) OR ($ERR.NUMBER > 0) THEN
+         RET = EKI_CLOSE("BINKKS")
+         RET = EKI_CLEAR("BINKKS")
+         WAIT SEC 2
+         GOTO CONNECT
+      ENDIF
+
+      WAIT SEC 0.012   ; 12ms 上报周期
+
+   ENDLOOP
 
 END

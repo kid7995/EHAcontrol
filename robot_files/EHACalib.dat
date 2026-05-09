@@ -1,49 +1,64 @@
 &ACCESS RVP
 &REL 1
-&PARAM EDITMASK = *
+&PARAM DISKPATH = KRC:\R1\EHACalib
 DEFDAT EHACalib PUBLIC
 
+; ── 外部声明（与参考 Main.dat 结构一致）──────────────────────────────────────
+EXT BAS (BAS_COMMAND :IN, REAL :IN)
+DECL INT SUCCESS
+
 ; ── EKI 通讯变量 ──────────────────────────────────────────────────────────────
+DECL CHAR       Bytes[64]
+DECL INT        OFFSET
 DECL EKI_STATUS EKI_RET
-DECL CHAR Bytes[64]
-DECL REAL RCVPOS[6]
-DECL CHAR RCVChars[8]
-DECL REAL ReadSPEED
-DECL INT  REVPOSLENGTH
-DECL INT  OFFSET
+DECL REAL       RCVPOS[6]
+DECL CHAR       RCVChars[8]
+DECL REAL       ReadSPEED
 
 ; ── 命令解析结果 ──────────────────────────────────────────────────────────────
-DECL INT CONTROL_TYPE_GET
-DECL INT MOVING_TYPE_GET
-DECL INT COORDINATE_TYPE_GET
-DECL INT TOOL_NUM
-DECL INT Path_NUM
-DECL INT ControlValve
+DECL INT  CONTROL_TYPE_GET
+DECL INT  MOVING_TYPE_GET
+DECL INT  COORDINATE_TYPE_GET
+DECL INT  TOOL_NUM
+DECL INT  Path_NUM
+DECL INT  ControlValve
 DECL BOOL RECVDONE
+DECL BOOL READSUCESS = FALSE
 
-; ── 运动目标 ──────────────────────────────────────────────────────────────────
-DECL POS POS_TGT_CARTESIUS
-DECL AXIS POS_TGT_AXIS
-DECL POS POS_CMD_CARTESIUS
-DECL AXIS POS_CMD_AXIS
+; ── 多点路径变量 ──────────────────────────────────────────────────────────────
+DECL INT   POSNUM
+DECL INT   REVPOSLENGTH
+DECL REAL  SETSPEED[4]
+DECL E6POS POINTS[1000]
 
-; ── 标定路径点位（在示教器上示教后填入实际数值）────────────────────────────
-; PATH1：预备点（竖直姿态，不接触力传感器）
-DECL POS P_PREP    = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+; ── 运动目标（E6POS / E6AXIS，与参考 Main.dat 类型完全一致）──────────────────
+DECL E6POS POS_TGT_CARTESIUS
+DECL E6POS POS_CMD_CARTESIUS = {X 0.0, Y 0.0, Z 0.0, A 0.0, B 0.0, C 0.0, S 'B0010', T 'B00101010', E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
+DECL E6AXIS POS_TGT_AXIS
+DECL AXIS  POS_CMD_AXIS = {A1 -1.0, A2 -1.0, A3 -1.0, A4 -1.0, A5 -1.0, A6 -1.0}
 
-; PATH2：标定接触点（EHA 与力传感器接触，位移零点附近）
-DECL POS P_CALIB   = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+; ── 空值常量（与参考 Main.dat 完全一致）──────────────────────────────────────
+DECL E6POS NULLPOINT = {X -1.0, Y -1.0, Z -1.0, A -1.0, B -1.0, C -1.0, S 'B0010', T 'B0010', E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
+DECL AXIS  NULLAXIS  = {A1 -1.0, A2 -1.0, A3 -1.0, A4 -1.0, A5 -1.0, A6 -1.0}
 
-; PATH3：过渡点（用于从标定点安全过渡到水平姿态）
-DECL POS P_TRANS   = {X 300.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+; ── 标定路径点位 ──────────────────────────────────────────────────────────────
+; ⚠ 以下坐标为占位符，必须在示教器上示教真实点位后替换
+; PATH1：预备点（竖直姿态，EHA 不接触力传感器）
+DECL E6POS P_PREP  = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
+
+; PATH2：标定接触点（EHA 接触力传感器，位移零点附近）
+DECL E6POS P_CALIB = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
+
+; PATH3：过渡点（从标定点安全收回，向水平姿态过渡）
+DECL E6POS P_TRANS = {X 300.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
 
 ; PATH4：水平姿态点（力矩清零，EHA 轴线水平）
-DECL POS P_LEVEL   = {X 700.0, Y 0.0, Z 500.0, A 0.0, B 90.0, C 0.0, S 2, T 35}
+DECL E6POS P_LEVEL = {X 700.0, Y 0.0, Z 500.0, A 0.0, B 90.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
 
 ; PATH5：质量补偿点（竖直姿态，自重补偿调零）
-DECL POS P_MASS    = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+DECL E6POS P_MASS  = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
 
-; PATH6：检测接触点（与力传感器接触，用于输出力检测）
-DECL POS P_TEST    = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+; PATH6：检测接触点（与力传感器接触，输出力检测）
+DECL E6POS P_TEST  = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35, E1 0.0, E2 0.0, E3 0.0, E4 0.0, E5 0.0, E6 0.0}
 
 ENDDAT
