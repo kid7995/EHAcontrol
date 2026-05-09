@@ -15,7 +15,11 @@
       "Bash(extract-text \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\")",
       "Bash(python scripts/office/unpack.py \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\" unpacked_tmp/)",
       "Bash(pandoc unpacked_tmp/word/document.xml -o - --from docx)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(cmake -B build_check -G \"Ninja\" -DCMAKE_PREFIX_PATH=\"C:/Qt/6.8.3/msvc2022_64\")",
+      "Bash(where cmake *)",
+      "Read(//c/Qt/**)",
+      "Bash(\"C:\\\\Qt\\\\Tools\\\\CMake_64\\\\bin\\\\cmake.exe\" -B build_check -G \"Ninja\" -DCMAKE_PREFIX_PATH=\"C:/Qt/6.8.1/msvc2022_64\" -DCMAKE_MAKE_PROGRAM=\"C:/Qt/Tools/Ninja/ninja.exe\")"
     ]
   }
 }

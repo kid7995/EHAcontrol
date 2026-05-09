@@ -1,0 +1,49 @@
+&ACCESS RVP
+&REL 1
+&PARAM EDITMASK = *
+DEFDAT EHACalib PUBLIC
+
+; ── EKI 通讯变量 ──────────────────────────────────────────────────────────────
+DECL EKI_STATUS EKI_RET
+DECL CHAR Bytes[64]
+DECL REAL RCVPOS[6]
+DECL CHAR RCVChars[8]
+DECL REAL ReadSPEED
+DECL INT  REVPOSLENGTH
+DECL INT  OFFSET
+
+; ── 命令解析结果 ──────────────────────────────────────────────────────────────
+DECL INT CONTROL_TYPE_GET
+DECL INT MOVING_TYPE_GET
+DECL INT COORDINATE_TYPE_GET
+DECL INT TOOL_NUM
+DECL INT Path_NUM
+DECL INT ControlValve
+DECL BOOL RECVDONE
+
+; ── 运动目标 ──────────────────────────────────────────────────────────────────
+DECL POS POS_TGT_CARTESIUS
+DECL AXIS POS_TGT_AXIS
+DECL POS POS_CMD_CARTESIUS
+DECL AXIS POS_CMD_AXIS
+
+; ── 标定路径点位（在示教器上示教后填入实际数值）────────────────────────────
+; PATH1：预备点（竖直姿态，不接触力传感器）
+DECL POS P_PREP    = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+
+; PATH2：标定接触点（EHA 与力传感器接触，位移零点附近）
+DECL POS P_CALIB   = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+
+; PATH3：过渡点（用于从标定点安全过渡到水平姿态）
+DECL POS P_TRANS   = {X 300.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+
+; PATH4：水平姿态点（力矩清零，EHA 轴线水平）
+DECL POS P_LEVEL   = {X 700.0, Y 0.0, Z 500.0, A 0.0, B 90.0, C 0.0, S 2, T 35}
+
+; PATH5：质量补偿点（竖直姿态，自重补偿调零）
+DECL POS P_MASS    = {X 500.0, Y 0.0, Z 600.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+
+; PATH6：检测接触点（与力传感器接触，用于输出力检测）
+DECL POS P_TEST    = {X 500.0, Y 0.0, Z 400.0, A 0.0, B 0.0, C 0.0, S 2, T 35}
+
+ENDDAT

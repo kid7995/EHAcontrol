@@ -1,0 +1,219 @@
+&ACCESS RVP
+&REL 1
+&PARAM EDITMASK = *
+&COMMENT EHA标定系统 - 机器人主程序
+
+; ============================================================================
+; 文件说明
+;   - 部署位置：KRC:\R1\Program\EHACalib\
+;   - 需要同目录存放 EHACalib.dat
+;   - 依赖 EKI 配置：BINKKR.xml（Port 56001，命令接收）
+;   - BINKKS.sub 为独立的 Submit 程序，负责状态上报（Port 56000）
+;
+; 路径点说明（在 .dat 文件中修改实际坐标）：
+;   PATH1 → P_PREP  ：预备点（竖直姿态，不接触力传感器）
+;   PATH2 → P_CALIB ：标定接触点（EHA接触力传感器，位移零点附近）
+;   PATH3 → P_TRANS ：过渡点（安全过渡到水平姿态）
+;   PATH4 → P_LEVEL ：水平姿态点（力矩清零位置）
+;   PATH5 → P_MASS  ：质量补偿点（竖直，自重补偿调零）
+;   PATH6 → P_TEST  ：检测接触点（输出力检测）
+; ============================================================================
+
+DEF EHACalib()
+
+    ; 初始化 EKI 命令通道
+    BINKKR_INIT()
+
+    ; 主循环：等待上位机命令 → 执行
+    CYCLE:
+    BINKKR_GET()
+
+    IF CONTROL_TYPE_GET == 0 THEN   ; kConfig：触发路径程序或外设控制
+        PathJob()
+        PCJob()
+    ELSE
+        IF CONTROL_TYPE_GET == 1 THEN  ; kMoving：单点运动
+            BINKKRMOVE()
+        ENDIF
+    ENDIF
+
+    GOTO CYCLE
+
+END
+
+; ── BINKKR_INIT：初始化 EKI 命令通道 ─────────────────────────────────────────
+DEF BINKKR_INIT()
+    DECL INT I
+
+    POS_TGT_CARTESIUS = $POS_ACT_MES
+    POS_CMD_CARTESIUS = POS_TGT_CARTESIUS
+    POS_TGT_AXIS = $AXIS_ACT_MEAS
+    POS_CMD_AXIS = POS_TGT_AXIS
+    CONTINUE
+    PTP POS_TGT_AXIS
+
+    FOR I=1 TO 64
+        Bytes[I]=0
+    ENDFOR
+
+    CONNECT:
+    EKI_RET = EKI_INIT("BINKKR")
+    EKI_RET = EKI_OPEN("BINKKR")
+    IF (NOT EKI_RET.CONNECTED) OR ($ERR.NUMBER > 0) THEN
+        EKI_RET = EKI_CLOSE("BINKKR")
+        EKI_RET = EKI_CLEAR("BINKKR")
+        ERR_RAISE($ERR)
+        WAIT SEC 2
+        GOTO CONNECT
+    ENDIF
+END
+
+; ── BINKKR_GET：阻塞等待并解析命令包 ─────────────────────────────────────────
+DEF BINKKR_GET()
+    WAIT SEC 0.0
+
+    WAIT_FLAG:
+    TimerAction(#TimerStart, 64, -1)
+    WAIT FOR ($FLAG[2] OR ($TIMER[64] >= 3000))
+    ON_ERROR_PROCEED
+    EKI_RET = EKI_GetString("BINKKR","RcvBuffer",Bytes[])
+    TimerAction(#TimerStop, 64, -1)
+
+    IF NOT EKI_RET.Connected THEN
+        BINKKR_INIT()
+        GOTO WAIT_FLAG
+    ELSE
+        IF NOT $FLAG[2] THEN
+            GOTO WAIT_FLAG
+        ENDIF
+    ENDIF
+    $FLAG[2] = FALSE
+
+    ; 重置解析变量
+    CONTROL_TYPE_GET    = -1
+    MOVING_TYPE_GET     = -1
+    COORDINATE_TYPE_GET = -1
+    TOOL_NUM            = -1
+    Path_NUM            = -1
+    RECVDONE            = FALSE
+    REVPOSLENGTH        = -1
+    ControlValve        = -1
+
+    ; 解析命令包（CAST_FROM 按字节偏移顺序提取）
+    OFFSET = 0
+    CAST_FROM(Bytes[], OFFSET, RCVPOS[], RCVChars[], ReadSPEED, REVPOSLENGTH)
+
+    CONTROL_TYPE_GET    = RCVChars[1]   ; byte[24]
+    MOVING_TYPE_GET     = RCVChars[2]   ; byte[25]
+    COORDINATE_TYPE_GET = RCVChars[3]   ; byte[26]
+    $ADVANCE            = RCVChars[4]   ; byte[27]
+    $OV_PRO             = RCVChars[5]   ; byte[28]
+    TOOL_NUM            = RCVChars[6]   ; byte[29]
+    Path_NUM            = RCVChars[7]   ; byte[30]
+    ControlValve        = RCVChars[8]   ; byte[31]
+    $VEL.CP             = ReadSPEED
+
+    IF TOOL_NUM > 0 THEN
+        $TOOL    = TOOL_DATA[TOOL_NUM]
+        $ACT_TOOL = TOOL_NUM
+    ENDIF
+
+    ; 填充笛卡尔/轴坐标目标
+    IF COORDINATE_TYPE_GET == 0 THEN
+        POS_CMD_CARTESIUS.X = RCVPOS[1]
+        POS_CMD_CARTESIUS.Y = RCVPOS[2]
+        POS_CMD_CARTESIUS.Z = RCVPOS[3]
+        POS_CMD_CARTESIUS.A = RCVPOS[4]
+        POS_CMD_CARTESIUS.B = RCVPOS[5]
+        POS_CMD_CARTESIUS.C = RCVPOS[6]
+    ELSE
+        POS_CMD_AXIS.A1 = RCVPOS[1]
+        POS_CMD_AXIS.A2 = RCVPOS[2]
+        POS_CMD_AXIS.A3 = RCVPOS[3]
+        POS_CMD_AXIS.A4 = RCVPOS[4]
+        POS_CMD_AXIS.A5 = RCVPOS[5]
+        POS_CMD_AXIS.A6 = RCVPOS[6]
+    ENDIF
+
+    RECVDONE = TRUE
+    EKI_RET = EKI_Send("BINKKR", Bytes[])   ; 发送 ACK
+END
+
+; ── BINKKRMOVE：执行单点运动 ──────────────────────────────────────────────────
+DEF BINKKRMOVE()
+    IF NOT RECVDONE THEN RETURN ENDIF
+
+    POS_CMD_CARTESIUS.S = $POS_ACT_MES.S
+    POS_CMD_CARTESIUS.T = $POS_ACT_MES.T
+
+    IF COORDINATE_TYPE_GET == 0 THEN
+        SWITCH MOVING_TYPE_GET
+            CASE 0 : LIN POS_CMD_CARTESIUS
+            CASE 1 : PTP POS_CMD_CARTESIUS
+            CASE 2 : LIN_REL POS_CMD_CARTESIUS #TOOL
+            CASE 3 : PTP_REL POS_CMD_CARTESIUS #TOOL
+        ENDSWITCH
+    ELSE
+        PTP POS_CMD_AXIS C_PTP
+    ENDIF
+END
+
+; ── PathJob：路径程序分发 ─────────────────────────────────────────────────────
+DEF PathJob()
+    SWITCH Path_NUM
+        CASE 1 : PathNum1()   ; 预备点
+        CASE 2 : PathNum2()   ; 标定接触点
+        CASE 3 : PathNum3()   ; 过渡点
+        CASE 4 : PathNum4()   ; 水平姿态（力矩清零位）
+        CASE 5 : PathNum5()   ; 质量补偿点
+        CASE 6 : PathNum6()   ; 检测接触点
+    ENDSWITCH
+END
+
+; ── PCJob：外设控制（本项目无外设，直接跳过）────────────────────────────────
+DEF PCJob()
+    IF ControlValve < 0 THEN
+        RETURN
+    ENDIF
+    ; 如需控制 IO 外设，在此添加 SWITCH/CASE
+END
+
+; ============================================================================
+; 路径子程序（根据实际工况在示教器上示教点位后修改 .dat 中的坐标）
+; ============================================================================
+
+; PATH1：预备点 ─ 竖直姿态，EHA 不接触力传感器
+DEF PathNum1()
+    $VEL.CP = 0.1
+    PTP P_PREP
+END
+
+; PATH2：标定接触点 ─ EHA 接触力传感器，位移零点附近
+DEF PathNum2()
+    $VEL.CP = 0.05
+    LIN P_CALIB
+END
+
+; PATH3：过渡点 ─ 从标定点安全收回，向水平姿态过渡
+DEF PathNum3()
+    $VEL.CP = 0.1
+    LIN P_TRANS
+END
+
+; PATH4：水平姿态 ─ 力矩清零位置，EHA 轴线水平
+DEF PathNum4()
+    $VEL.CP = 0.05
+    PTP P_LEVEL
+END
+
+; PATH5：质量补偿点 ─ 竖直姿态，用于自重补偿调零
+DEF PathNum5()
+    $VEL.CP = 0.1
+    PTP P_MASS
+END
+
+; PATH6：检测接触点 ─ EHA 接触力传感器，用于输出力检测
+DEF PathNum6()
+    $VEL.CP = 0.05
+    LIN P_TEST
+END

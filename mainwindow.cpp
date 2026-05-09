@@ -8,9 +8,9 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , serial(new QSerialPort(this))
-    , tcpSocket(new QTcpSocket(this)) //报文
-    , m_readTimer(new QTimer(this))  //报文
-
+    , tcpSocket(new QTcpSocket(this))
+    , m_readTimer(new QTimer(this))
+    , m_kukaRobot(new KukaRobot(this))
 {
     ui->setupUi(this);
     centralWidget()->setFixedSize(1280, 720);
@@ -20,7 +20,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     showImage(":/pic/image/Connection status.png");
     ui->STEP1->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-    // ui->tabWidget->tabBar()->hide();
     m_tabAnimation = new QPropertyAnimation(ui->tabWidget, "currentIndex", this);
     m_tabAnimation->setDuration(300);
     m_tabAnimation->setEasingCurve(QEasingCurve::InOutQuad);
@@ -30,16 +29,17 @@ MainWindow::MainWindow(QWidget *parent)
     ui->EHAcalibration->setEnabled(false);
     ui->EHAzero->setEnabled(false);
     ui->EHAmassconfirm->setEnabled(true);
-    // ui->EHAtest_2->setEnabled(false);
-    // ui->EHAtest->setEnabled(false);
-
-    // 启动力传感器连接线程
+    ui->AutoCalibBtn->setEnabled(false);  // 机器人连接后才可用
 
     initActions();
 
     connect(tcpSocket, &QTcpSocket::readyRead, this, &MainWindow::onSocketReadyRead);
     connect(m_readTimer, &QTimer::timeout, this, &MainWindow::readModbusData);
-    connect(ui->tabWidget,&QTabWidget::currentChanged,this,&MainWindow::ontabwidgetindexchanged);
+    connect(ui->tabWidget, &QTabWidget::currentChanged, this, &MainWindow::ontabwidgetindexchanged);
+
+    // 机器人信号
+    connect(m_kukaRobot, &KukaRobot::connected,    this, &MainWindow::onRobotConnected);
+    connect(m_kukaRobot, &KukaRobot::disconnected, this, &MainWindow::onRobotDisconnected);
 }
 
 MainWindow::~MainWindow()
@@ -69,6 +69,10 @@ void MainWindow::initActions()
             this, &MainWindow::onEHAtestButtonClicked);
     connect(serial, &QSerialPort::readyRead,
             this, &MainWindow::onSerialReadyRead);
+    connect(ui->RobotConnect, &QPushButton::clicked,
+            this, &MainWindow::onRobotConnectClicked);
+    connect(ui->AutoCalibBtn, &QPushButton::clicked,
+            this, &MainWindow::onAutoCalibClicked);
 }
 
 
@@ -844,9 +848,9 @@ void MainWindow::onSerialReadyRead()
             (quint8)m_serialRxBuffer[i+1] == 0xAD &&
             (quint8)m_serialRxBuffer[i+2] == 0xAB &&
             (quint8)m_serialRxBuffer[i+3] == 0x07) {
-            int16_t forceRaw = (int16_t)(((quint8)m_serialRxBuffer[i+4] << 8) |
+            m_serialForceRaw = (int16_t)(((quint8)m_serialRxBuffer[i+4] << 8) |
                                           (quint8)m_serialRxBuffer[i+5]);
-            ui->EHAforceR->setText(QString::number(forceRaw) + " N");
+            ui->EHAforceR->setText(QString::number(m_serialForceRaw) + " N");
         }
     }
 
@@ -854,6 +858,173 @@ void MainWindow::onSerialReadyRead()
     if (m_serialRxBuffer.size() > 4096) {
         m_serialRxBuffer.remove(0, m_serialRxBuffer.size() - 2048);
     }
+}
+
+// ── 机器人连接 ────────────────────────────────────────────────────────────────
+
+void MainWindow::onRobotConnectClicked()
+{
+    if (m_kukaRobot->isConnected()) {
+        m_kukaRobot->disconnectRobot();
+        ui->RobotConnect->setText("机器人连接");
+        ui->RobotConnectStatus->setText("未连接");
+        ui->AutoCalibBtn->setEnabled(false);
+        ui->textEdit->append("[机器人] 已断开");
+        return;
+    }
+
+    // 启动 TCP 服务器监听（机器人主动连入）
+    m_kukaRobot->init(56000, 56001);
+    ui->RobotConnect->setText("等待连接...");
+    ui->RobotConnectStatus->setText("监听中");
+    ui->textEdit->append("[机器人] TCP 服务器已启动，等待机器人连接（56000/56001）");
+    ui->textEdit->append("[机器人] 请在 KRC 启动 BINKKS.sub（Submit）及 EHACalib.src（Main）");
+}
+
+void MainWindow::onRobotConnected()
+{
+    ui->RobotConnect->setText("断开机器人");
+    ui->RobotConnectStatus->setText("已连接");
+    ui->AutoCalibBtn->setEnabled(true);
+    ui->textEdit->append("[机器人] 双通道连接成功，可执行全流程自动标定");
+}
+
+void MainWindow::onRobotDisconnected()
+{
+    ui->RobotConnect->setText("机器人连接");
+    ui->RobotConnectStatus->setText("未连接");
+    ui->AutoCalibBtn->setEnabled(false);
+    ui->textEdit->append("[机器人] 连接断开");
+}
+
+// ── 等待机器人运动完成 ─────────────────────────────────────────────────────────
+
+void MainWindow::waitForRobotDone(int maxWaitMs)
+{
+    // 等待运动启动（最多 3s），再等待运动结束
+    delayMS(500);
+
+    QElapsedTimer timer;
+    timer.start();
+    while (m_kukaRobot->isMoving() && timer.elapsed() < maxWaitMs) {
+        delayMS(50);
+    }
+    if (timer.elapsed() >= maxWaitMs) {
+        ui->textEdit->append("[机器人] 警告：等待运动超时！");
+    }
+}
+
+// ── 全流程自动标定 ────────────────────────────────────────────────────────────
+
+void MainWindow::onAutoCalibClicked()
+{
+    if (!serial->isOpen()) {
+        ui->textEdit->append("[自动标定] 错误：请先连接串口（ECM设备）！");
+        return;
+    }
+    if (!m_kukaRobot->isConnected()) {
+        ui->textEdit->append("[自动标定] 错误：请先连接机器人！");
+        return;
+    }
+    ui->AutoCalibBtn->setEnabled(false);
+    runAutoCalibration();
+    ui->AutoCalibBtn->setEnabled(true);
+}
+
+void MainWindow::runAutoCalibration()
+{
+    ui->textEdit->clear();
+    ui->textEdit->append("═══════ 全流程自动标定开始 ═══════");
+
+    // ── Step 2：机器人执行 PATH1 → 预备点 ─────────────────────────────────
+    ui->textEdit->append("\n[步骤1/6] 机器人移动至预备点（PATH1）...");
+    m_kukaRobot->executePathJob(1, 50);
+    waitForRobotDone();
+    ui->textEdit->append("[步骤1/6] 机器人已到达预备点");
+
+    // ── Step 3：上位机初始化 EHA ───────────────────────────────────────────
+    ui->textEdit->append("\n[步骤2/6] EHA 初始化...");
+    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
+    oneharesetButtonClicked();
+    ui->textEdit->append("[步骤2/6] EHA 初始化完毕");
+
+    if (m_pn168K < 1.0) {
+        ui->textEdit->append("[自动标定] 错误：PN168 读取失败，终止流程！");
+        return;
+    }
+
+    // ── Step 4：机器人执行 PATH2 → 标定接触点 ─────────────────────────────
+    ui->textEdit->append("\n[步骤3/6] 机器人移动至标定接触点（PATH2）...");
+    m_kukaRobot->executePathJob(2, 30);
+    waitForRobotDone();
+    ui->textEdit->append("[步骤3/6] 机器人已到位");
+
+    // ── Step 5：上位机执行线性标定 ────────────────────────────────────────
+    ui->textEdit->append("\n[步骤4/6] 执行线性标定，采集 K/B 数据...");
+    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
+    onehacalibrationButtonClicked();
+    // onehacalibrationButtonClicked 内部设置力控模式后自动返回
+    ui->textEdit->append("[步骤4/6] 标定完成，K/B 已写入设备");
+
+    // ── Step 6 & 7：机器人执行 PATH3 → PATH4（过渡到水平姿态）─────────────
+    ui->textEdit->append("\n[步骤5a] 机器人移动至过渡点（PATH3）...");
+    m_kukaRobot->executePathJob(3, 50);
+    waitForRobotDone();
+
+    ui->textEdit->append("[步骤5b] 机器人移动至水平姿态（PATH4）...");
+    m_kukaRobot->executePathJob(4, 30);
+    waitForRobotDone();
+    ui->textEdit->append("[步骤5b] 机器人已到水平姿态");
+
+    // ── Step 8：上位机执行力矩清零 ────────────────────────────────────────
+    ui->textEdit->append("\n[步骤5c] 力矩清零...");
+    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
+    onEHAzeroButtonClicked();
+    ui->textEdit->append("[步骤5c] 力矩清零完成");
+
+    // ── Step 9：机器人执行 PATH5 → 质量补偿调零 ───────────────────────────
+    ui->textEdit->append("\n[步骤6a] 机器人移动至质量补偿点（PATH5）...");
+    m_kukaRobot->executePathJob(5, 50);
+    waitForRobotDone();
+    ui->textEdit->append("[步骤6a] 机器人已到位，开始自动质量补偿调零...");
+
+    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 4);
+    m_autoPN170 = 0;
+    sendData(170, 0);
+    delayMS(1000);
+
+    // 自动迭代：读取实时力 → 写入 PN170，直到力 ≈ 0（最多 30 次）
+    for (int iter = 0; iter < 30; ++iter) {
+        int16_t force = m_serialForceRaw;
+        ui->textEdit->append(QString("  [质量调零] 第%1次，当前力: %2 N，PN170: %3")
+                                 .arg(iter + 1).arg(force).arg(m_autoPN170));
+        if (qAbs(force) <= 1) {
+            ui->textEdit->append("  [质量调零] 力值已补偿至 0，调零完成");
+            break;
+        }
+        // 将当前力值累加到 PN170（设备的质量补偿 PN170 与力值大致 1:1 关系）
+        m_autoPN170 += static_cast<int>(force);
+        sendData(170, static_cast<quint16>(m_autoPN170));
+        delayMS(1000);
+        if (iter == 29)
+            ui->textEdit->append("  [质量调零] 警告：达到最大迭代次数，请手动检查");
+    }
+
+    // ── Step 10：机器人执行 PATH6 → 输出力检测 ────────────────────────────
+    ui->textEdit->append("\n[步骤6b] 机器人移动至检测接触点（PATH6）...");
+    m_kukaRobot->executePathJob(6, 30);
+    waitForRobotDone();
+    ui->textEdit->append("[步骤6b] 机器人已到位，开始输出力检测...");
+
+    onEHAtestButtonClicked();
+
+    // ── 返回预备点 ────────────────────────────────────────────────────────
+    ui->textEdit->append("\n[收尾] 机器人返回预备点（PATH1）...");
+    m_kukaRobot->executePathJob(1, 50);
+    waitForRobotDone();
+    ui->textEdit->append("[收尾] 机器人已回到预备点");
+
+    ui->textEdit->append("\n═══════ 全流程自动标定完成 ═══════");
 }
 
 // 通用的淡入淡出动画函数

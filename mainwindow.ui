@@ -467,7 +467,198 @@ background-color: #616161;
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
-           <height>110</height>
+           <height>10</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_robot_label">
+         <item alignment="Qt::AlignLeft|Qt::AlignVCenter">
+          <widget class="QLabel" name="label_robot_ip">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>30</height>
+            </size>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">font: 10pt &quot;Cascadia Mono&quot;;</string>
+           </property>
+           <property name="text">
+            <string>机器人IP地址</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_robot">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QLabel" name="RobotConnectStatus">
+           <property name="minimumSize">
+            <size>
+             <width>50</width>
+             <height>24</height>
+            </size>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">font: 9pt &quot;Cascadia Mono&quot;; color: #888888;</string>
+           </property>
+           <property name="text">
+            <string>未连接</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignRight|Qt::AlignVCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="RobotIPaddress">
+         <property name="minimumSize">
+          <size>
+           <width>220</width>
+           <height>32</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QLineEdit {
+    border: 1px solid #cccccc;
+    border-radius: 8px;
+    padding: 5px;
+    background: white;
+    font: 10pt &quot;Cascadia Mono&quot;;
+}</string>
+         </property>
+         <property name="text">
+          <string>192.168.1.66</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignCenter</set>
+         </property>
+         <property name="placeholderText">
+          <string>上位机IP地址</string>
+         </property>
+        </widget>
+       </item>
+       <item alignment="Qt::AlignHCenter">
+        <widget class="QPushButton" name="RobotConnect">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>160</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">font: 10pt &quot;Cascadia Mono&quot;;
+QPushButton {
+    background-color: #455A64;
+    border: none;
+    color: white;
+    padding: 8px 20px;
+    border-radius: 12px;
+    font-size: 13px;
+}
+QPushButton:hover {
+    background-color: #546E7A;
+}
+QPushButton:pressed {
+    background-color: #37474F;
+}
+QPushButton:disabled {
+    background-color: #9E9E9E;
+}</string>
+         </property>
+         <property name="text">
+          <string>机器人连接</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_robot_mid">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>8</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item alignment="Qt::AlignHCenter">
+        <widget class="QPushButton" name="AutoCalibBtn">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>200</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">font: 10pt &quot;Cascadia Mono&quot;;
+QPushButton {
+    background-color: #2E7D32;
+    border: none;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #388E3C;
+}
+QPushButton:pressed {
+    background-color: #1B5E20;
+}
+QPushButton:disabled {
+    background-color: #9E9E9E;
+}</string>
+         </property>
+         <property name="text">
+          <string>全流程自动标定</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_4b">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>8</height>
           </size>
          </property>
         </spacer>

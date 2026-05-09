@@ -1,0 +1,20 @@
+<ETHERNETKRL>
+    <CONFIGURATION>
+        <EXTERNAL>
+            <IP>192.168.1.66</IP>    <!-- 上位机 IP，与实际网卡地址一致 -->
+            <PORT>56001</PORT>
+        </EXTERNAL>
+        <INTERNAL>
+            <ENVIRONMENT>Program</ENVIRONMENT>  <!-- 主程序环境 -->
+            <TIMEOUT Connect="2000"/>
+            <MESSAGES Logging="disabled" Display="disabled"/>
+        </INTERNAL>
+    </CONFIGURATION>
+    <RECEIVE>
+        <RAW>
+            <!-- Set_Flag="2" 收到数据后自动置 $FLAG[2]=TRUE -->
+            <ELEMENT Tag="RcvBuffer" Type="BYTE" Set_Flag="2" Size="64"/>
+        </RAW>
+    </RECEIVE>
+    <SEND/>
+</ETHERNETKRL>
