@@ -84,8 +84,9 @@ public:
 signals:
     void connected();
     void disconnected();
-    void stateUpdated();    // 每帧状态包解析后发出
-    void motionStopped();   // PRO_MOVE 1→0 时发出
+    void stateUpdated();    // 每帧状态包解析后发出（约 83Hz）
+    void motionStarted();   // PRO_MOVE 0→1 时发出（机器人开始运动）
+    void motionStopped();   // PRO_MOVE 1→0 时发出（机器人运动结束）
 
 private slots:
     void onDataReceived(const QByteArray &data);

@@ -191,8 +191,10 @@ void KukaRobot::onDataReceived(const QByteArray &data)
     parseStatusPacket(data);
     emit stateUpdated();
 
+    if (!m_prevMoving && m_isMoving)
+        emit motionStarted();   // 机器人刚开始运动
     if (m_prevMoving && !m_isMoving)
-        emit motionStopped();
+        emit motionStopped();   // 机器人刚停止运动
     m_prevMoving = m_isMoving;
 }
 

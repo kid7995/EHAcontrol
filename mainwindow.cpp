@@ -38,8 +38,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->tabWidget, &QTabWidget::currentChanged, this, &MainWindow::ontabwidgetindexchanged);
 
     // 机器人信号
-    connect(m_kukaRobot, &KukaRobot::connected,    this, &MainWindow::onRobotConnected);
-    connect(m_kukaRobot, &KukaRobot::disconnected, this, &MainWindow::onRobotDisconnected);
+    connect(m_kukaRobot, &KukaRobot::connected,      this, &MainWindow::onRobotConnected);
+    connect(m_kukaRobot, &KukaRobot::disconnected,   this, &MainWindow::onRobotDisconnected);
+    connect(m_kukaRobot, &KukaRobot::motionStarted,  this, &MainWindow::onRobotMotionStarted);
+    connect(m_kukaRobot, &KukaRobot::motionStopped,  this, &MainWindow::onRobotMotionStopped);
 }
 
 MainWindow::~MainWindow()
@@ -897,20 +899,43 @@ void MainWindow::onRobotDisconnected()
     ui->textEdit->append("[机器人] 连接断开");
 }
 
+void MainWindow::onRobotMotionStarted()
+{
+    ui->RobotConnectStatus->setText("运动中");
+}
+
+void MainWindow::onRobotMotionStopped()
+{
+    ui->RobotConnectStatus->setText("已连接/静止");
+    ui->textEdit->append("[机器人] 运动已完成");
+}
+
 // ── 等待机器人运动完成 ─────────────────────────────────────────────────────────
+// 分两阶段：先等运动"启动"（最多 3s），再等运动"结束"（最多 maxWaitMs）
+// 如果 3s 内未检测到运动，说明机器人已在目标位置或指令已快速完成，直接返回。
 
 void MainWindow::waitForRobotDone(int maxWaitMs)
 {
-    // 等待运动启动（最多 3s），再等待运动结束
-    delayMS(500);
-
-    QElapsedTimer timer;
-    timer.start();
-    while (m_kukaRobot->isMoving() && timer.elapsed() < maxWaitMs) {
+    // ── 阶段1：等待运动启动（最多 3 秒）────────────────────────────────────
+    QElapsedTimer startTimer;
+    startTimer.start();
+    while (!m_kukaRobot->isMoving() && startTimer.elapsed() < 3000) {
         delayMS(50);
     }
-    if (timer.elapsed() >= maxWaitMs) {
-        ui->textEdit->append("[机器人] 警告：等待运动超时！");
+
+    if (!m_kukaRobot->isMoving()) {
+        // 3 秒内未检测到运动：机器人已在目标位/路径极短已完成
+        return;
+    }
+
+    // ── 阶段2：等待运动结束（最多 maxWaitMs）──────────────────────────────
+    QElapsedTimer stopTimer;
+    stopTimer.start();
+    while (m_kukaRobot->isMoving() && stopTimer.elapsed() < maxWaitMs) {
+        delayMS(50);
+    }
+    if (stopTimer.elapsed() >= maxWaitMs) {
+        ui->textEdit->append("[机器人] 警告：等待运动停止超时！");
     }
 }
 

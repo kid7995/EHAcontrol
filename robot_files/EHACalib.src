@@ -78,10 +78,12 @@ DEF BINKKR_INIT()
    ON_ERROR_PROCEED
    EKI_RET = EKI_OPEN("BINKKR")
    IF (NOT EKI_RET.CONNECTED) OR ($ERR.NUMBER > 0) THEN
+      ; 注意：不能用 ERR_RAISE，否则会触发 IR_STOPM 中断导致程序停止
+      ON_ERROR_PROCEED
       EKI_RET = EKI_CLOSE("BINKKR")
+      ON_ERROR_PROCEED
       EKI_RET = EKI_CLEAR("BINKKR")
-      ERR_RAISE($ERR)
-      WAIT SEC 2
+      WAIT SEC 2    ; 等待 2s 后重试，期间 PC 应启动 TCP 服务器
       GOTO CONNECT
    ENDIF
 

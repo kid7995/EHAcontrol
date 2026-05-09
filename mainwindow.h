@@ -109,5 +109,7 @@ private slots:
     void onAutoCalibClicked();
     void onRobotConnected();
     void onRobotDisconnected();
+    void onRobotMotionStarted();   // 机器人开始运动
+    void onRobotMotionStopped();   // 机器人运动结束
 };
 #endif // MAINWINDOW_H
