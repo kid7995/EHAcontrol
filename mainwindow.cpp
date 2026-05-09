@@ -918,10 +918,11 @@ void MainWindow::waitForRobotDone(int maxWaitMs)
 
 void MainWindow::onAutoCalibClicked()
 {
-    if (!serial->isOpen()) {
-        ui->textEdit->append("[自动标定] 错误：请先连接串口（ECM设备）！");
-        return;
-    }
+    // [机器人测试模式] 暂时屏蔽串口检查，仅验证机器人运动
+    // if (!serial->isOpen()) {
+    //     ui->textEdit->append("[自动标定] 错误：请先连接串口（ECM设备）！");
+    //     return;
+    // }
     if (!m_kukaRobot->isConnected()) {
         ui->textEdit->append("[自动标定] 错误：请先连接机器人！");
         return;
@@ -934,97 +935,68 @@ void MainWindow::onAutoCalibClicked()
 void MainWindow::runAutoCalibration()
 {
     ui->textEdit->clear();
-    ui->textEdit->append("═══════ 全流程自动标定开始 ═══════");
+    // [机器人测试模式] 仅验证机器人路径运动，标定设备通讯全部屏蔽，每步间隔5秒
+    ui->textEdit->append("═══════ 机器人运动测试开始（标定设备已屏蔽）═══════");
 
-    // ── Step 2：机器人执行 PATH1 → 预备点 ─────────────────────────────────
-    ui->textEdit->append("\n[步骤1/6] 机器人移动至预备点（PATH1）...");
+    // ── PATH1 → 预备点 ────────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH1] 机器人移动至预备点（50%速度）...");
     m_kukaRobot->executePathJob(1, 50);
     waitForRobotDone();
-    ui->textEdit->append("[步骤1/6] 机器人已到达预备点");
+    ui->textEdit->append("[PATH1] 已到达预备点");
+    // [机器人测试模式] EHA初始化已屏蔽
+    // oneharesetButtonClicked();
+    delayMS(5000);
 
-    // ── Step 3：上位机初始化 EHA ───────────────────────────────────────────
-    ui->textEdit->append("\n[步骤2/6] EHA 初始化...");
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
-    oneharesetButtonClicked();
-    ui->textEdit->append("[步骤2/6] EHA 初始化完毕");
-
-    if (m_pn168K < 1.0) {
-        ui->textEdit->append("[自动标定] 错误：PN168 读取失败，终止流程！");
-        return;
-    }
-
-    // ── Step 4：机器人执行 PATH2 → 标定接触点 ─────────────────────────────
-    ui->textEdit->append("\n[步骤3/6] 机器人移动至标定接触点（PATH2）...");
+    // ── PATH2 → 标定接触点 ────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH2] 机器人移动至标定接触点（30%速度）...");
     m_kukaRobot->executePathJob(2, 30);
     waitForRobotDone();
-    ui->textEdit->append("[步骤3/6] 机器人已到位");
+    ui->textEdit->append("[PATH2] 已到位");
+    // [机器人测试模式] 线性标定已屏蔽
+    // onehacalibrationButtonClicked();
+    delayMS(5000);
 
-    // ── Step 5：上位机执行线性标定 ────────────────────────────────────────
-    ui->textEdit->append("\n[步骤4/6] 执行线性标定，采集 K/B 数据...");
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
-    onehacalibrationButtonClicked();
-    // onehacalibrationButtonClicked 内部设置力控模式后自动返回
-    ui->textEdit->append("[步骤4/6] 标定完成，K/B 已写入设备");
-
-    // ── Step 6 & 7：机器人执行 PATH3 → PATH4（过渡到水平姿态）─────────────
-    ui->textEdit->append("\n[步骤5a] 机器人移动至过渡点（PATH3）...");
+    // ── PATH3 → 过渡点 ────────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH3] 机器人移动至过渡点（50%速度）...");
     m_kukaRobot->executePathJob(3, 50);
     waitForRobotDone();
+    ui->textEdit->append("[PATH3] 已到位");
+    delayMS(5000);
 
-    ui->textEdit->append("[步骤5b] 机器人移动至水平姿态（PATH4）...");
+    // ── PATH4 → 水平姿态 ──────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH4] 机器人移动至水平姿态（30%速度）...");
     m_kukaRobot->executePathJob(4, 30);
     waitForRobotDone();
-    ui->textEdit->append("[步骤5b] 机器人已到水平姿态");
+    ui->textEdit->append("[PATH4] 已到水平姿态");
+    // [机器人测试模式] 力矩清零已屏蔽
+    // onEHAzeroButtonClicked();
+    delayMS(5000);
 
-    // ── Step 8：上位机执行力矩清零 ────────────────────────────────────────
-    ui->textEdit->append("\n[步骤5c] 力矩清零...");
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
-    onEHAzeroButtonClicked();
-    ui->textEdit->append("[步骤5c] 力矩清零完成");
-
-    // ── Step 9：机器人执行 PATH5 → 质量补偿调零 ───────────────────────────
-    ui->textEdit->append("\n[步骤6a] 机器人移动至质量补偿点（PATH5）...");
+    // ── PATH5 → 质量补偿点 ────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH5] 机器人移动至质量补偿点（50%速度）...");
     m_kukaRobot->executePathJob(5, 50);
     waitForRobotDone();
-    ui->textEdit->append("[步骤6a] 机器人已到位，开始自动质量补偿调零...");
+    ui->textEdit->append("[PATH5] 已到位");
+    // [机器人测试模式] 质量补偿迭代已屏蔽
+    // sendData(170, 0); ...
+    delayMS(5000);
 
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 4);
-    m_autoPN170 = 0;
-    sendData(170, 0);
-    delayMS(1000);
-
-    // 自动迭代：读取实时力 → 写入 PN170，直到力 ≈ 0（最多 30 次）
-    for (int iter = 0; iter < 30; ++iter) {
-        int16_t force = m_serialForceRaw;
-        ui->textEdit->append(QString("  [质量调零] 第%1次，当前力: %2 N，PN170: %3")
-                                 .arg(iter + 1).arg(force).arg(m_autoPN170));
-        if (qAbs(force) <= 1) {
-            ui->textEdit->append("  [质量调零] 力值已补偿至 0，调零完成");
-            break;
-        }
-        // 将当前力值累加到 PN170（设备的质量补偿 PN170 与力值大致 1:1 关系）
-        m_autoPN170 += static_cast<int>(force);
-        sendData(170, static_cast<quint16>(m_autoPN170));
-        delayMS(1000);
-        if (iter == 29)
-            ui->textEdit->append("  [质量调零] 警告：达到最大迭代次数，请手动检查");
-    }
-
-    // ── Step 10：机器人执行 PATH6 → 输出力检测 ────────────────────────────
-    ui->textEdit->append("\n[步骤6b] 机器人移动至检测接触点（PATH6）...");
+    // ── PATH6 → 检测接触点 ────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH6] 机器人移动至检测接触点（30%速度）...");
     m_kukaRobot->executePathJob(6, 30);
     waitForRobotDone();
-    ui->textEdit->append("[步骤6b] 机器人已到位，开始输出力检测...");
+    ui->textEdit->append("[PATH6] 已到位");
+    // [机器人测试模式] 输出力检测已屏蔽
+    // onEHAtestButtonClicked();
+    delayMS(5000);
 
-    onEHAtestButtonClicked();
-
-    // ── 返回预备点 ────────────────────────────────────────────────────────
-    ui->textEdit->append("\n[收尾] 机器人返回预备点（PATH1）...");
+    // ── PATH1 → 返回预备点 ────────────────────────────────────────────────
+    ui->textEdit->append("\n[PATH1] 机器人返回预备点（50%速度）...");
     m_kukaRobot->executePathJob(1, 50);
     waitForRobotDone();
-    ui->textEdit->append("[收尾] 机器人已回到预备点");
+    ui->textEdit->append("[PATH1] 已回到预备点");
 
-    ui->textEdit->append("\n═══════ 全流程自动标定完成 ═══════");
+    ui->textEdit->append("\n═══════ 机器人运动测试完成 ═══════");
 }
 
 // 通用的淡入淡出动画函数

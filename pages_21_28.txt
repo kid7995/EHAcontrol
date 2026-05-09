@@ -1,0 +1,362 @@
+﻿KUKA.Ethernet KRL 3.1
+元素 说明
+如果 TYPE = 客户端，将忽略 IP 地址。
+PORT 外部系统定义为服务器时的端口号（TYPE = 服务器）
+• 1 … 65534
+提示：选择端口时须注意，不能有其他服务（如操作系
+统）使用该端口。否则无法通过该端口建立连接。
+如果 TYPE = 客户端，将忽略端口号。
+在段 <INTERNAL> … </INTERNAL> 中定义 EKI 的设置：
+元素 属性 说明
+ENVIRONMENT ——— 将删除连接与操作相结合（可选）
+• Program：在机器人解释器操作后删除
+‒ 程序复位。
+‒ 取消程序。
+‒ 重新配置输入/输出端。
+• Submit：在提交解释器操作后删除
+‒ 反选提交解释器。
+‒ 重新配置输入/输出端。
+• System：在系统操作后删除
+‒ 重新配置输入/输出端。
+默认值：Program
+BUFFERING Mode 处理所有数据存储器的方法（可选）
+• FIFO：先进先出
+• LIFO：后进先出
+默认值：FIFO
+Limit 数据存储器能够容纳的数据元素最大数量（可
+选）
+• 1 … 512
+默认值：16
+BUFFSIZE Limit 能够接收而无需解释的字节最大数量（可选）
+• 1 … 65534 字节
+默认值：16384 字节
+TIMEOUT Connect 尝试建立连接的时间，超过这段时间后将中止
+尝试（可选）
+单位：ms
+• 0 … 65534 ms
+默认值：2000 ms
+ALIVE Set_Out 连接成功时给输出端或旗标赋值（可选）
+Set_Flag 输出端编号：
+• 1 … 4096
+旗标编号：
+• 1 … 1024
+KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018 www.kuka.com | 21/117
+程编KUKA.Ethernet KRL 3.1
+元素 属性 说明
+只要有与外部系统的连接处于激活状态，旗标
+或输出端就处于已赋值状态。如果与外部系统
+的连接中止，则输出端或旗标将被删除。
+Ping 发送监控与外部系统连接的 Ping 命令的周期
+（可选）
+• 1 … 65534 s
+IP ——— EKI 定义为服务器时的 IP 地址（EXTERNAL/
+TYPE = Client）
+如果 EXTERNAL/TYPE = Server，将忽略 IP
+地址。
+PORT ——— EKI 定义为服务器时的端口号（EXTERNAL/
+TYPE = Client）
+• 54600 … 54615
+如果 EXTERNAL/TYPE = Server，将忽略端
+口号。
+PROTOCOL ——— 传输协议（可选）
+• TCP
+• UPD
+默认值：TCP
+建议始终使用 TCP/IP 协议。
+MESSAGES Logging 禁用在 EKI 日志中写入信息（可选）。
+• warning：记录警告信息和错误信息。
+• error：仅记录错误信息。
+• disabled：记录已禁用。
+默认值：error
+Display 禁用 smartHMI 上的输出信息（可选）。
+• error：信息输出激活。
+• disabled：信息输出已被禁用。
+默认值：error
+(>>> 10.3 "禁用信息输出和信息记录" 页面 97)
+示例
+<CONFIGURATION>
+<EXTERNAL>
+<IP>172.1.10.5</IP>
+<PORT>60000</PORT>
+<TYPE>Server</TYPE>
+</EXTERNAL>
+<INTERNAL>
+<ENVIRONMENT>Program</ENVIRONMENT>
+<BUFFERING Mode="FIFO" Limit="10"/>
+<BUFFSIZE Limit="16384"/>
+<TIMEOUT Connect="60000"/>
+<ALIVE Set_Out="666" Ping="200"/>
+<IP>192.1.10.20</IP>
+<PORT>54600</PORT>
+22/117 | www.kuka.com KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018
+程编KUKA.Ethernet KRL 3.1
+<PROTOCOL>TCP</PROTOCOL>
+<MESSAGES Logging="error" Display="disabled"/>
+</INTERNAL>
+</CONFIGURATION>
+6.1.2 用于数据接收的 XML 结构
+说明
+配置取决于是接收 XML 数据还是二进制数据。
+• 如果是接收 XML 数据，必须定义 XML 结构：<XML> … </XML>
+• 如果是接收二进制数据，必须定义原始数据：<RAW> … </RAW>
+XML 结构 <XML> … </XML> 的元素中的属性：
+元素 属性 说明
+ELEMENT 日 元素名称
+在此定义用于接收数据的 XML 结构
+（XPath）。
+(>>> 6.1.4 "按照 XPath 架构配置" 页面 25)
+ELEMENT 型号 元素的数据类型
+• STRING
+• REAL
+• INT
+• BOOL
+• FRAME
+提示：当标签仅用于事件信息时，可选。在这
+种情况下不为该元素预留存储空间。
+事件旗标示例：<ELEMENT Tag="Ext"
+Set_Flag="56"/>
+ELEMENT Set_Out 接收到元素时给输出端或旗标赋值（可选）
+Set_Flag 输出端编号：
+• 1 … 4096
+旗标编号：
+• 1 … 1024
+提示：如果通过 Set_Out/Set_Flag 设置一个输
+出端或插上一个旗标，那么程序代码中的相应
+系统变量 $OUT[]/$FLAG[] 必须被重新复位。
+ELEMENT Mode 处理数据存储器中的数据组的方法
+• FIFO：先进先出
+• LIFO：后进先出
+只有当处理各个数据组的方法与 BUFFERING
+下为 EKI 配置的不同时才相关。
+原始数据 <RAW> … </RAW> 中的元素的属性：
+元素 属性 说明
+ELEMENT 日 元素名称
+ELEMENT 型号 元素的数据类型
+KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018 www.kuka.com | 23/117
+程编KUKA.Ethernet KRL 3.1
+元素 属性 说明
+• BYTE：有固定长度的二进制数据组
+• STREAM：有可变末尾字符串和可变长度
+的二进制数据组
+ELEMENT Set_Out 接收到元素时给输出端或旗标赋值（可选）
+Set_Flag 输出端编号：
+• 1 … 4096
+旗标编号：
+• 1 … 1024
+提示：如果通过 Set_Out/Set_Flag 设置一个输
+出端或插上一个旗标，那么程序代码中的相应
+系统变量 $OUT[]/$FLAG[] 必须被重新复位。
+ELEMENT EOS 基本信息的末尾字符串（只有当 Type =
+"STREAM" 时，才相关）
+• ASCII 编码：1 … 32 个字符
+• 备选结尾通过符号“|”隔开。
+示例：
+• <ELEMENT … EOS="123,134,21"/>
+• <ELEMENT …
+EOS="123,134,21Ι13,10"/>
+ELEMENT Size 当 Type = "BYTE" 时，信息的固定大小
+• 1 … 3600 字节
+示例
+<RECEIVE>
+<XML>
+<ELEMENT Tag="Ext/Str" Type="STRING"/>
+<ELEMENT Tag="Ext/Pos/XPos" Type="REAL" Mode="LIFO"/>
+<ELEMENT Tag="Ext/Pos/YPos" Type="REAL"/>
+<ELEMENT Tag="Ext/Pos/ZPos" Type="REAL"/>
+<ELEMENT Tag="Ext/Temp/Cpu" Type="REAL" Set_Out="1"/>
+<ELEMENT Tag="Ext/Temp/Fan" Type="REAL" Set_Flag="14"/>
+<ELEMENT Tag="Ext/Integer/AState" Type="INT"/>
+<ELEMENT Tag="Ext/Integer/BState" Type="INT"/>
+<ELEMENT Tag="Ext/Boolean/CState" Type="BOOL"/>
+<ELEMENT Tag="Ext/Frames/Frame1" Type="FRAME"/>
+<ELEMENT Tag="Ext/Attributes/@A1" Type="STRING"/>
+<ELEMENT Tag="Ext/Attributes/@A2" Type="INT"/>
+<ELEMENT Tag="Ext" Set_Flag="56"/>
+</XML>
+</RECEIVE>
+<RECEIVE>
+<RAW>
+<ELEMENT Tag="RawData" Type="BYTE" Size="1408"
+Set_Flag="14"/>
+</RAW>
+</RECEIVE>
+24/117 | www.kuka.com KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018
+程编KUKA.Ethernet KRL 3.1
+<RECEIVE>
+<RAW>
+<ELEMENT Tag="MyStream" Type="STREAM" EOS="123,134,21"
+Size="836" Set_Flag="14"/>
+</RAW>
+</RECEIVE>
+6.1.3 用于发送数据的 XML 结构
+说明
+配置取决于是发送 XML 数据还是二进制数据。
+• 如果是发送 XML 数据，必须定义 XML 结构：<XML> … </XML>
+发送时，XML 结构将按照配置的顺序进行创建。
+• 发送二进制数据直接在 KRL 编程中实现。无须指定配置。
+XML 结构 <XML> … </XML> 的元素中的属性：
+属性 说明
+日 元素名称
+在此定义用于发送数据的 XML 结构（XPath）。
+示例
+<SEND>
+<XML>
+<ELEMENT Tag="Robot/Data/ActPos/@X"/>
+<ELEMENT Tag="Robot/Data/ActPos/@Y"/>
+<ELEMENT Tag="Robot/Data/ActPos/@Z"/>
+<ELEMENT Tag="Robot/Data/ActPos/@A"/>
+<ELEMENT Tag="Robot/Data/ActPos/@B"/>
+<ELEMENT Tag="Robot/Data/ActPos/@C"/>
+<ELEMENT Tag="Robot/Status"/>
+<ELEMENT Tag="Robot/Mode"/>
+<ELEMENT Tag="Robot/Complex/Tickcount"/>
+<ELEMENT Tag="Robot/RobotType/Robot/Type"/>
+</XML>
+</SEND>
+6.1.4 按照 XPath 架构配置
+说明
+使用 XML 进行数据交换时，交换的 XML 文件必须按照相同架构构建。
+Ethernet KRL 使用 XPath 架构进行 XML 文件的描述和读取。
+根据 XPath 需区分下列情况：
+• 描述和读取元素
+• 描述和读取属性
+元素写法
+• 保存的用于发送数据的 XML 文件：
+<Robot>
+<Mode>...</Mode>
+KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018 www.kuka.com | 25/117
+程编KUKA.Ethernet KRL 3.1
+<RobotLamp>
+<GrenLamp>
+<LightOn>...</LightOn>
+</GrenLamp>
+</RobotLamp>
+</Robot>
+• 为发送数据所配置的 XML 结构：
+<SEND>
+<XML>
+<ELEMENT Tag="Robot/Mode" />
+<ELEMENT Tag="Robot/RobotLamp/GrenLamp/LightOn" />
+</XML>
+<SEND />
+属性写法
+• 保存的用于发送数据的 XML 文件：
+<Robot>
+<Data>
+<ActPos X="...">
+</ActPos>
+<LastPos A="..." B="..." C="..." X="..." Y="..."
+Z="...">
+</LastPos>
+</Data>
+</Robot>
+• 为发送数据所配置的 XML 结构：
+<SEND>
+<XML>
+<ELEMENT Tag="Robot/Data/LastPos/@X" />
+<ELEMENT Tag="Robot/Data/LastPos/@Y" />
+...
+<ELEMENT Tag="Robot/Data/ActPos/@X" />
+</XML>
+<SEND />
+6.2 用于数据交换的函数
+EKI 提供相应的函数用于在机器人控制系统和外部系统之间数据交换。
+函数的详细说明可参见附录。 (>>> 10.4 "指令参考" 页面 97)
+初始化、打开、关闭和删除连接
+EKI_STATUS = EKI_Init(CHAR[])
+EKI_STATUS = EKI_Open(CHAR[])
+EKI_STATUS = EKI_Close(CHAR[])
+EKI_STATUS = EKI_Clear(CHAR[])
+发送数据
+EKI_STATUS = EKI_Send(CHAR[], CHAR[], INT)
+26/117 | www.kuka.com KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018
+程编KUKA.Ethernet KRL 3.1
+写入数据
+EKI_STATUS = EKI_SetReal(CHAR[], CHAR[], REAL)
+EKI_STATUS = EKI_SetInt(CHAR[], CHAR[], INT)
+EKI_STATUS = EKI_SetBool(CHAR[], CHAR[], BOOL)
+EKI_STATUS = EKI_SetFrame(CHAR[], CHAR[], FRAME)
+EKI_STATUS = EKI_SetString(CHAR[], CHAR[], CHAR[])
+读取数据
+EKI_STATUS = EKI_GetBool(CHAR[], CHAR[], BOOL)
+EKI_STATUS = EKI_GetBoolArray(CHAR[], CHAR[], BOOL[])
+EKI_STATUS = EKI_GetInt(CHAR[], CHAR[], INT)
+EKI_STATUS = EKI_GetIntArray(CHAR[], CHAR[], INT[])
+EKI_STATUS = EKI_GetReal(CHAR[], CHAR[], REAL)
+EKI_STATUS = EKI_GetRealArray(CHAR[], CHAR[], REAL[])
+EKI_STATUS = EKI_GetString(CHAR[], CHAR[], CHAR[])
+EKI_STATUS = EKI_GetFrame(CHAR[], CHAR[], FRAME)
+EKI_STATUS = EKI_GetFrameArray(CHAR[], CHAR[], FRAME[])
+检查函数是否出现错误
+EKI_CHECK(EKI_STATUS, EKrlMsgType, CHAR[])
+删除、禁用、解禁、检查数据存储器
+EKI_STATUS = EKI_Clear(CHAR[])
+EKI_STATUS = EKI_ClearBuffer(CHAR[], CHAR[])
+EKI_STATUS = EKI_Lock(CHAR[])
+EKI_STATUS = EKI_Unlock(CHAR[])
+EKI_STATUS = EKI_CheckBuffer(CHAR[], CHAR[])
+6.2.1 编程提示
+• 在提交解释器中创建连接时必须注意下列事项：
+‒ 在连接配置中必须通过元素 <ENVIRONMENT> 说明这是一个提交通
+道。
+‒ 在提交解释器中打开的通道同样可由机器人解释器触发。
+‒ 如果取消选择提交解释器，将通过配置自动删除连接。
+• 当提交解释器和机器人解释器同时访问一个通道时，需注意下列事项：
+‒ 通过 EKI_Get…() 读取数据时，将删除该存储器的内容。因此，不建
+议同时通过提交解释器和机器人解释器读取数据。
+‒ 提交解释器和机器人解释器可用 EKI_Set…() 以写入的方式访问同一
+个通道。当访问同一个目标元素，且在此期间未调用 EKI_Send()
+时，这些调用操作会相互覆盖这些数据。
+‒ 不同解释器内的执行时间点会相互发生变化，使得竞相进行读写访问
+时，性能可能意外改变。
+建议为每个发送和接收任务打开一个单独的通道。
+使用 KUKA.MultiSubmitInterpreter 时，上述发送和接收特性同样适用。
+KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018 www.kuka.com | 27/117
+程编KUKA.Ethernet KRL 3.1
+在预进中执行 EKI 指令！
+• 如果要在主进中运行 EKI 指令，必须使用会触发预进停止的指令，如
+WAIT SEC。
+• 由于每次访问存储器都需花费时间，因此建议用数组存取函数 EKI_Get…
+Array() 调出较大的数据量。
+• 通过函数 EKI_Get…Array() 可以访问最多 512 个数组元素。尽管可在
+KRL 中创建较大数组，如 myFrame[1000]，但始终只有最多 512 个元素
+可读。
+• 等待数据可有多种途径：
+‒ 通过给旗标或输出端赋值，可显示接收了某个特定的数据元素或一个
+完整的数据组。（用于接收数据的 XML 结构中的元素 Set_Flag 或
+Set_Out）。
+示例：通过 WAIT FOR $FLAG[x] 中断 KRL 程序
+(>>> 7.6 "“XmlCallback”示例" 页面 47)
+‒ 通过函数 EKI_CheckBuffer() 可周期性查询存储器中是否有新的数据
+元素。
+6.2.2 初始化和删除连接
+说明
+必须用函数 EKI_Init() 创建连接并初始化。此时将读入函数中给出的连接配
+置。既可在机器人解释器，也可在提交解释器中创建连接。
+可在机器人或提交解释器中通过函数 EKI_Clear() 重新删除连接。此外，删除
+连接可与机器人或提交解释器的操作或系统操作对接。（可通过连接配置中的
+<ENVIRONMENT> 元素配置）
+配置“Program”
+图 6-1: 连接配置“Program”
+在该配置中，将在下列操作后删除连接。
+• 程序复位。
+• 取消程序。
+• 重新配置输入/输出端。
+重新配置输入/输出端时，将重新载入驱动程序并删除所有初始化。
+28/117 | www.kuka.com KST Ethernet KRL 3.1 V1 | 发布日期: 20.09.2018
+程编--- PAGE 21 ---
+
+--- PAGE 22 ---
+
+--- PAGE 23 ---
+
+--- PAGE 24 ---
+
+--- PAGE 25 ---
+
+--- PAGE 26 ---
+
+--- PAGE 27 ---
+
+--- PAGE 28 ---
+

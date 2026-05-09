@@ -16,5 +16,9 @@
             <ELEMENT Tag="RcvBuffer" Type="BYTE" Set_Flag="2" Size="64"/>
         </RAW>
     </RECEIVE>
-    <SEND/>
+    <SEND>
+        <RAW>
+            <ELEMENT Tag="SndBuffer" Type="BYTE" Size="64"/>
+        </RAW>
+    </SEND>
 </ETHERNETKRL>

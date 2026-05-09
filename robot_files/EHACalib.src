@@ -7,16 +7,17 @@
 ; 文件说明
 ;   部署位置 ： KRC:\R1\Program\EHACalib\
 ;   同目录文件： EHACalib.dat
+;               PathNum1.src ~ PathNum6.src（各路径点独立运动程序）
 ;   EKI 配置  ： BINKKR.xml（Port 56001，命令接收）
 ;   Submit   ： BINKKS.sub（Port 56000，状态上报，需配置为 Submit 自启动）
 ;
-; 路径点（在 EHACalib.dat 中修改，示教后替换占位坐标）：
-;   PathNum1 → P_PREP  : 预备点（竖直，不接触传感器）
-;   PathNum2 → P_CALIB : 标定接触点（EHA 接触力传感器，位移零点）
-;   PathNum3 → P_TRANS : 过渡点（安全收回到水平前）
-;   PathNum4 → P_LEVEL : 水平姿态（力矩清零位）
-;   PathNum5 → P_MASS  : 质量补偿点（竖直，自重调零）
-;   PathNum6 → P_TEST  : 检测接触点（输出力检测）
+; 路径分发（PathJob → 调用同目录 PathNumX.src）：
+;   PathNum1 : 预备点（竖直，不接触传感器）
+;   PathNum2 : 标定接触点（EHA 接触力传感器，位移零点）
+;   PathNum3 : 过渡点（安全收回到水平前）
+;   PathNum4 : 水平姿态（力矩清零位）
+;   PathNum5 : 质量补偿点（竖直，自重调零）
+;   PathNum6 : 检测接触点（输出力检测）
 ; ============================================================================
 
 DEF EHACalib()
@@ -72,7 +73,9 @@ DEF BINKKR_INIT()
    ENDFOR
 
    CONNECT:
+   ON_ERROR_PROCEED
    EKI_RET = EKI_INIT("BINKKR")
+   ON_ERROR_PROCEED
    EKI_RET = EKI_OPEN("BINKKR")
    IF (NOT EKI_RET.CONNECTED) OR ($ERR.NUMBER > 0) THEN
       EKI_RET = EKI_CLOSE("BINKKR")
@@ -269,43 +272,3 @@ DEF EKI_RESET()
    EKI_RET = EKI_OPEN("BINKKR")
 END
 
-; ============================================================================
-; 路径子程序
-; ⚠ 以下点位坐标为占位符，必须在示教器示教后修改 EHACalib.dat 中的 P_xxx
-; ============================================================================
-
-; PATH1：预备点 ─ 竖直姿态，EHA 不接触力传感器
-DEF PathNum1()
-   $VEL.CP = 0.1
-   PTP P_PREP
-END
-
-; PATH2：标定接触点 ─ EHA 接触力传感器，位移零点附近
-DEF PathNum2()
-   $VEL.CP = 0.05
-   LIN P_CALIB
-END
-
-; PATH3：过渡点 ─ 从标定点安全收回
-DEF PathNum3()
-   $VEL.CP = 0.1
-   LIN P_TRANS
-END
-
-; PATH4：水平姿态 ─ 力矩清零位置
-DEF PathNum4()
-   $VEL.CP = 0.05
-   PTP P_LEVEL
-END
-
-; PATH5：质量补偿点 ─ 竖直姿态，自重补偿调零
-DEF PathNum5()
-   $VEL.CP = 0.1
-   PTP P_MASS
-END
-
-; PATH6：检测接触点 ─ 输出力检测
-DEF PathNum6()
-   $VEL.CP = 0.05
-   LIN P_TEST
-END

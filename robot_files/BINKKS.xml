@@ -10,11 +10,9 @@
             <MESSAGES Logging="disabled" Display="disabled"/>
         </INTERNAL>
     </CONFIGURATION>
-    <RECEIVE>
+    <SEND>
         <RAW>
-            <!-- Set_Flag="1" 收到数据后自动置 $FLAG[1]=TRUE -->
-            <ELEMENT Tag="Buffer" Type="BYTE" Set_Flag="1" Size="64"/>
+            <ELEMENT Tag="SndBuffer" Type="BYTE" Size="64"/>
         </RAW>
-    </RECEIVE>
-    <SEND/>
+    </SEND>
 </ETHERNETKRL>
