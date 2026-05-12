@@ -1,6 +1,6 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
-// 不需要再包含 QMessageBox
+#include <QDebug>
 #include <QPropertyAnimation>
 #include <QGraphicsOpacityEffect>
 
@@ -10,6 +10,7 @@ MainWindow::MainWindow(QWidget *parent)
     , serial(new QSerialPort(this))
     , tcpSocket(new QTcpSocket(this)) //报文
     , m_readTimer(new QTimer(this))  //报文
+    , m_heartbeatTimer(new QTimer(this))
 
 {
     ui->setupUi(this);
@@ -39,6 +40,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(tcpSocket, &QTcpSocket::readyRead, this, &MainWindow::onSocketReadyRead);
     connect(m_readTimer, &QTimer::timeout, this, &MainWindow::readModbusData);
+    connect(m_heartbeatTimer, &QTimer::timeout, this, &MainWindow::sendHeartbeat);
     connect(ui->tabWidget,&QTabWidget::currentChanged,this,&MainWindow::ontabwidgetindexchanged);
 }
 
@@ -423,10 +425,11 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
 void MainWindow::onehaconnectButtonClicked()
 {
     if (serial->isOpen()) {
+        m_heartbeatTimer->stop();
         serial->close();
         ui->EHAconnect->setText("连接");
         ui->textEdit->append("已断开串口连接");
-        ui->EHAreset->setEnabled(false);   // 断开后再次禁用 reset 和 calibration
+        ui->EHAreset->setEnabled(false);
         ui->EHAcalibration->setEnabled(false);
         return;
     }
@@ -471,6 +474,19 @@ void MainWindow::onehaconnectButtonClicked()
     serial->setFlowControl(QSerialPort::NoFlowControl);
 
     if (serial->open(QIODevice::ReadWrite)) {
+        qDebug() << "[连接] 串口已打开：" << portName;
+
+        // 协议规定：连接后先发握手包，设备才开始通信
+        const quint8 handshake[] = { 0x55, 0x55, 0xB9, 0x9B, 0x9B, 0xB9, 0xAA, 0xAA };
+        serial->write(reinterpret_cast<const char*>(handshake), sizeof(handshake));
+        serial->flush();
+        qDebug() << "[连接] 已发送握手包";
+
+        delayMS(50);                // 等设备就绪
+        sendData(2, 79);            // Pn002=66：参数监视=转矩反馈
+        m_heartbeatTimer->start(100);
+        qDebug() << "[连接] 已发送 Pn002=79，心跳已启动";
+
         ui->EHAconnect->setText("断开");
         ui->textEdit->append(QString("已连接到 %1，请根据需求选择下列功能").arg(portName));
         ui->textEdit->append("EHA标定，点击《EHA初始化》按钮，初始化需要设备姿态调整为竖直 不与标定工具接触");
@@ -497,8 +513,6 @@ void MainWindow::oneharesetButtonClicked()
     //pn168=150，pn169=0；pn046=150，pn047=0；pn052=150，pn053=0
     ui->textEdit->append("步骤二:EHA初始化。。。");
     sendData(0,9999);
-    // sendData(168, 94); 由外部操作人员确认168数值
-    // sendData(168, 1215);
     sendData(169, 0);
     ui->textEdit->append("内参初始化完毕");
     //质量清零
@@ -507,7 +521,7 @@ void MainWindow::oneharesetButtonClicked()
     ui->textEdit->append("质量初始化完毕");
     //pn102清零
     sendData(44, 200);
-    MainWindow::delayMS(4000);
+    MainWindow::delayMS(2000);
     sendData(102, 1);
     sendData(102, 0);
     sendData(44, 0);
@@ -640,7 +654,7 @@ void MainWindow::onehacalibrationButtonClicked()
     quint16 K_write = static_cast<quint16>(qRound(new_K));
     quint16 B_write = static_cast<quint16>(static_cast<int16_t>(qRound(new_B)));
     sendData(168, K_write);
-    sendData(169, B_write);
+    // sendData(169, B_write);
     ui->textEdit->append(QString("  PN168 ← %1").arg(K_write));
     ui->textEdit->append(QString("  PN169 ← %1").arg(static_cast<int16_t>(B_write)));
 
@@ -758,7 +772,9 @@ void MainWindow::readModbusData()
 
 void MainWindow::onSocketReadyRead()
 {
-    parseModbusResponse(tcpSocket->readAll());
+    QByteArray data = tcpSocket->readAll();
+    // ui->textEdit->append(QString("[TCP RX] %1").arg(QString(data.toHex(' '))));
+    parseModbusResponse(data);
 }
 
 void MainWindow::parseModbusResponse(const QByteArray &data)
@@ -835,26 +851,62 @@ void MainWindow::on_ForwardStep4_clicked(bool checked) {
 
 void MainWindow::onSerialReadyRead()
 {
-    m_serialRxBuffer.append(serial->readAll());
+    qDebug() << "[串口 RX] readyRead 触发";
+    QByteArray newBytes = serial->readAll();
+    static qint64 lastRxPrint = 0;
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - lastRxPrint >= 1000) {
+        // ui->textEdit->append(QString("[串口 RX] %1").arg(QString(newBytes.toHex(' '))));
+        lastRxPrint = now;
+    }
+    m_serialRxBuffer.append(newBytes);
 
-    // 解析设备推流的参数监视帧: EF AD AB 07 [ValH] [ValL] ?? ??
-    // 写入 Pn002=79 后，该帧内容为实时力值（有符号，单位 N）
     for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
-        if ((quint8)m_serialRxBuffer[i]   == 0xEF &&
-            (quint8)m_serialRxBuffer[i+1] == 0xAD &&
-            (quint8)m_serialRxBuffer[i+2] == 0xAB &&
-            (quint8)m_serialRxBuffer[i+3] == 0x07) {
-            int16_t forceRaw = (int16_t)(((quint8)m_serialRxBuffer[i+4] << 8) |
-                                          (quint8)m_serialRxBuffer[i+5]);
-            ui->EHAforceR->setText(QString::number(forceRaw) + " N");
+        if ((quint8)m_serialRxBuffer[i]   != 0xEF ||
+            (quint8)m_serialRxBuffer[i+1] != 0xAD ||
+            (quint8)m_serialRxBuffer[i+2] != 0xAB)
+            continue;
+
+        quint8 type = (quint8)m_serialRxBuffer[i+3];
+        quint8 b4   = (quint8)m_serialRxBuffer[i+4];
+        quint8 b5   = (quint8)m_serialRxBuffer[i+5];
+        quint8 b6   = (quint8)m_serialRxBuffer[i+6];
+        quint8 b7   = (quint8)m_serialRxBuffer[i+7];
+        quint32 rawU = ((quint32)b4 << 24) | ((quint32)b5 << 16) | ((quint32)b6 << 8) | b7;
+        qint32  rawS = (qint32)rawU;
+
+        switch (type) {
+        case 0x07:
+            ui->EHAforceR->setText(QString("%1").arg(rawU));
+            // ui->textEdit->append(QString("[参数监视] uint32=%1  int32=%2").arg(rawU).arg(rawS));
+            break;
+        case 0x1A:
+            // qDebug() << QString("[母线电压] uint32=%1").arg(rawU);
+            break;
+        case 0x08:
+            // qDebug() << QString("[电流]     int32=%1").arg(rawS);
+            break;
+        case 0x09:
+            // qDebug() << QString("[速度]     int32=%1").arg(rawS);
+            break;
+        case 0x0B:
+            // qDebug() << QString("[单圈位置] uint32=%1").arg(rawU);
+            break;
+        case 0x0A:
+            // qDebug() << QString("[多圈位置] uint32=%1").arg(rawU);
+            break;
+        case 0x0C:
+            // qDebug() << QString("[位置]     int32=%1").arg(rawS);
+            break;
+        default:
+            break;
         }
     }
 
-    // 防止缓冲区无限增长，保留后 2KB 供帧解析
-    if (m_serialRxBuffer.size() > 4096) {
+    if (m_serialRxBuffer.size() > 4096)
         m_serialRxBuffer.remove(0, m_serialRxBuffer.size() - 2048);
-    }
 }
+
 
 // 通用的淡入淡出动画函数
 void MainWindow::applyFadeAnimation(QTabWidget* tabWidget, int fromIndex, int toIndex) {
@@ -897,3 +949,9 @@ void MainWindow::applyFadeAnimation(QTabWidget* tabWidget, int fromIndex, int to
     animOut->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
+void MainWindow::sendHeartbeat()
+{
+    if (!serial->isOpen()) return;
+    const quint8 hb[] = { 0x55, 0x55, 0xB6, 0xB6, 0x7B, 0x7B, 0xAA, 0xAA };
+    serial->write(reinterpret_cast<const char*>(hb), sizeof(hb));
+}

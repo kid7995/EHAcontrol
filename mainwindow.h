@@ -5,6 +5,7 @@
 #include <QSerialPort>
 #include <QtSerialPort/QSerialPortInfo>
 #include <QTimer>
+#include <QDateTime>
 #include <QIcon>
 #include <QThread> // 新增
 #include <QTcpSocket>
@@ -44,9 +45,10 @@ private:
     //力传感报文
     QTcpSocket *tcpSocket;
     QTimer *m_readTimer;
+    QTimer *m_heartbeatTimer;
     quint16 sensorforceValue;
 
-    //检测绘图
+//检测绘图
     QChart *m_chart;
     QChartView *m_chartView;
     QLineSeries *m_series;
@@ -90,5 +92,6 @@ private slots:
 
     void ontabwidgetindexchanged(int index);
     void onSerialReadyRead();
+    void sendHeartbeat();
 };
 #endif // MAINWINDOW_H

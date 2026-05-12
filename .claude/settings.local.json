@@ -15,7 +15,13 @@
       "Bash(extract-text \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\")",
       "Bash(python scripts/office/unpack.py \"D:\\\\Saiwider\\\\技术&项目\\\\001产品\\\\006通讯用相关软件\\\\上位机_7_9.docx\" unpacked_tmp/)",
       "Bash(pandoc unpacked_tmp/word/document.xml -o - --from docx)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(cd /tmp)",
+      "Bash(cp \"D:/Saiwider/技术\\\\&项目/001产品/006通讯用相关软件/上位机_7_9.docx\" doc.docx)",
+      "Bash(unzip -p doc.docx word/document.xml)",
+      "Read(//d/Saiwider/技术&项目/001产品/006通讯用相关软件/**)",
+      "Read(//mnt/d/Saiwider/技术&项目/001产品/**)",
+      "Bash(unzip -p \"/mnt/d/Saiwider/技术&项目/001产品/006通讯用相关软件/上位机_7_9.docx\" word/document.xml)"
     ]
   }
 }
