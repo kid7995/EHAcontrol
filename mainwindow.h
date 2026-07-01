@@ -62,6 +62,9 @@ private:
     // 串口接收缓冲 & 读取到的 PN168 原始K值
     QByteArray m_serialRxBuffer;
     double m_pn168K = 0.0;
+    bool m_captureOnce = false;
+    bool m_waitingForPn168 = false;
+    qint64 m_pn168StartMs = 0;
 
 private slots:
     //标定相关
@@ -93,5 +96,6 @@ private slots:
     void ontabwidgetindexchanged(int index);
     void onSerialReadyRead();
     void sendHeartbeat();
+    void onSwitchEthercatButtonClicked();
 };
 #endif // MAINWINDOW_H

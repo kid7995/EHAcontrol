@@ -4,5 +4,6 @@
         <file>image/Connection status.png</file>
         <file>image/Initial pose.png</file>
         <file>image/Level pose.png</file>
+        <file>image/logo.ico</file>
     </qresource>
 </RCC>

@@ -15,7 +15,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     centralWidget()->setFixedSize(1280, 720);
-    setWindowIcon(QIcon("D:/Saiwider/Code/Qt/EHAcontrol/image/logo.ico"));
+    setWindowIcon(QIcon(":/pic/image/logo.ico"));
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 0);
     setWindowTitle("赛威德EHA自主标定系统");
 
@@ -69,6 +69,8 @@ void MainWindow::initActions()
             this, &MainWindow::onEHAtestButtonClicked);
     connect(ui->EHAtest_2, &QPushButton::clicked,
             this, &MainWindow::onEHAtestButtonClicked);
+    connect(ui->SwitchEthercatBtn, &QPushButton::clicked,
+            this, &MainWindow::onSwitchEthercatButtonClicked);
     connect(serial, &QSerialPort::readyRead,
             this, &MainWindow::onSerialReadyRead);
 }
@@ -181,45 +183,24 @@ void MainWindow::onEHAtestButtonClicked()
         ui->textEdit->append("错误：请先连接串口！");
         return;
     }
-
+    //切换到串口控制模式
+    sendData(160,0);
+    delayMS(1000);
     ui->textEdit->append("开始EHA检测流程...");
 
     // 清空之前的结果
     m_testResults.clear();
 
-    // 定义测试力值序列
+    // 定义正向测试力值序列
     //浮动模块测试
-    const QVector<quint16> testForces = {20, 40, 60, 80, 100, 120, 140, 160, 180, 200};
-    const QVector<quint16> testForcesReverse = {200, 180, 160, 140, 120, 100, 80, 60, 40, 20};
+    const QVector<quint16> testForces = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
     //滚压设备测试
     // const QVector<quint16> testForces = {200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
-    // const QVector<quint16> testForcesReverse = {2000, 1800, 1600, 1400, 1200, 1000, 800, 600, 400, 200};
-    // 存储测量结果(设定力, 实际力)
-    QVector<QPair<quint16, quint16>> measurements;
 
     // 正向测试(从小到大)
     ui->textEdit->append("\n正向测试:");
+    qreal maxDeviation = 0.0; // 用于存储最大偏差值
     for (quint16 force : testForces) {
-        settleForce(force);
-        if(force==200){
-            delayMS(4000);
-        }else{
-            delayMS(2000);
-        }
-
-        if (!sensorforceValue) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
-            continue;
-        }
-
-        quint16 actualForce = sensorforceValue/10.0;
-        measurements.append({force, actualForce});
-        ui->textEdit->append(QString("设定力: %1, 实际力: %2").arg(force).arg(actualForce));
-    }
-
-    // 反向测试(从大到小)
-    ui->textEdit->append("\n反向测试:");
-    for (quint16 force : testForcesReverse) {
         settleForce(force);
         delayMS(2000);
 
@@ -228,43 +209,27 @@ void MainWindow::onEHAtestButtonClicked()
             continue;
         }
 
-        quint16 actualForce = sensorforceValue/10.0;
-        measurements.append({force, actualForce});
-        ui->textEdit->append(QString("设定力: %1, 实际力: %2").arg(force).arg(actualForce));
-    }
+        quint16 actualForce = sensorforceValue / 10.0;
+        qreal deviation = (qreal)actualForce - (qreal)force;
+        m_testResults.append({force, deviation});
 
-    // 计算平均值和偏差
-    ui->textEdit->append("\n计算结果:");
-    qreal maxDeviation = 0.0; // 用于存储最大偏差值
-    for (quint16 force : testForces) {
-        QVector<quint16> actualForces;
-        for (const auto &measurement : measurements) {
-            if (measurement.first == force) {
-                actualForces.append(measurement.second);
-            }
+        // 更新最大偏差值
+        if (qAbs(deviation) > qAbs(maxDeviation)) {
+            maxDeviation = deviation;
         }
 
-        if (!actualForces.isEmpty()) {
-            quint16 sum = std::accumulate(actualForces.begin(), actualForces.end(), 0);
-            quint16 average = sum / actualForces.size();
-            qreal deviation = average - force;
-            m_testResults.append({force, deviation});
-
-            // 更新最大偏差值
-            if (qAbs(deviation) > qAbs(maxDeviation)) {
-                maxDeviation = deviation;
-            }
-
-            // ui->textEdit->append(QString("设定力: %1, 平均实际力: %2, 偏差: %3")
-            //                          .arg(force).arg(average).arg(deviation));
-        }
+        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N, 偏差: %3N")
+                                 .arg(force).arg(actualForce).arg(deviation, 0, 'f', 1));
     }
+    ui->textEdit->append(QString("\n最大偏差: %1N").arg(maxDeviation, 0, 'f', 1));
 
     // 绘制偏差曲线图，并传递最大偏差值
     showDeviationChart(maxDeviation);
 
     // 测试完成后力值归零
     settleForce(0);
+    //切换到ethercat控制模式
+    delayMS(1000);
 }
 
 // 修改 showDeviationChart 函数，接收 maxDeviation 参数
@@ -358,7 +323,7 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
     resultLabel->setMinimumHeight(40);
 
     QString resultMessage;
-    if (qAbs(maxDeviation) < 50) {
+    if (qAbs(maxDeviation) < 7.5) {
         resultMessage = "<font size='5' color='#4CAF50'>✓ 测试通过 (最大偏差: %1)</font>";
         resultLabel->setStyleSheet(
             "background-color: #E8F5E9;"
@@ -478,9 +443,15 @@ void MainWindow::onehaconnectButtonClicked()
 
         // 协议规定：连接后先发握手包，设备才开始通信
         const quint8 handshake[] = { 0x55, 0x55, 0xB9, 0x9B, 0x9B, 0xB9, 0xAA, 0xAA };
+        m_serialRxBuffer.clear();
+        m_captureOnce = true;
         serial->write(reinterpret_cast<const char*>(handshake), sizeof(handshake));
         serial->flush();
-        qDebug() << "[连接] 已发送握手包";
+        // qDebug() << "[连接] 已发送握手包";
+        // QTimer::singleShot(1000, this, [this]() {
+        //     m_captureOnce = false;
+        //     qDebug() << "[握手响应结束] 缓冲区共" << m_serialRxBuffer.size() << "字节:" << m_serialRxBuffer.toHex(' ');
+        // });
 
         delayMS(50);                // 等设备就绪
         sendData(2, 79);            // Pn002=66：参数监视=转矩反馈
@@ -514,13 +485,15 @@ void MainWindow::oneharesetButtonClicked()
     ui->textEdit->append("步骤二:EHA初始化。。。");
     sendData(0,9999);
     sendData(169, 0);
+    // pn160=0 串口控制模式
+    sendData(160,0);
     ui->textEdit->append("内参初始化完毕");
     //质量清零
     sendData(48, 0);
     sendData(170, 0);
     ui->textEdit->append("质量初始化完毕");
     //pn102清零
-    sendData(44, 200);
+    sendData(44, 100);
     MainWindow::delayMS(2000);
     sendData(102, 1);
     sendData(102, 0);
@@ -528,43 +501,15 @@ void MainWindow::oneharesetButtonClicked()
     sendData(2,81); //数显屏设置为显示位移量
     ui->textEdit->append("设定力初始化完毕\n标定时设备需接触力传感器，并下压至数显屏数值在0(位移零点)左右");
 
-    // 发送全参数读取命令，自动获取 PN168 原始K值
-    ui->textEdit->append("正在读取 PN168...");
-    m_serialRxBuffer.clear();
-    QByteArray readCmd;
-    readCmd.append((char)0x55);
-    readCmd.append((char)0x55);
-    readCmd.append((char)0xB9);
-    readCmd.append((char)0x9B);
-    readCmd.append((char)0x9B);
-    readCmd.append((char)0xB9);
-    readCmd.append((char)0xAA);
-    readCmd.append((char)0xAA);
-    serial->write(readCmd);
-    delayMS(300); // 等待设备返回全量参数（200×8字节，115200波特约需111ms）
-
-    // 解析回包，查找 Pn168 帧格式: 55 55 00 A8 ValH ValL AA AA
+    // 发送全参数读取命令，在 onSerialReadyRead 中异步等待 PN168
     m_pn168K = 0.0;
-    for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
-        if ((quint8)m_serialRxBuffer[i]   == 0x55 &&
-            (quint8)m_serialRxBuffer[i+1] == 0x55 &&
-            (quint8)m_serialRxBuffer[i+2] == 0x00 &&
-            (quint8)m_serialRxBuffer[i+3] == 0xA8 &&
-            (quint8)m_serialRxBuffer[i+6] == 0xAA &&
-            (quint8)m_serialRxBuffer[i+7] == 0xAA) {
-            m_pn168K = ((quint8)m_serialRxBuffer[i+4] << 8)
-                     |  (quint8)m_serialRxBuffer[i+5];
-            ui->textEdit->append(QString("PN168 读取成功，原始K值: %1").arg(m_pn168K));
-            break;
-        }
-    }
-    if (m_pn168K < 1.0) {
-        ui->textEdit->append(QString("警告：PN168 自动读取失败（收到 %1 字节），标定将无法执行")
-                                 .arg(m_serialRxBuffer.size()));
-    }
-
-    // 启用标定按钮
-    ui->EHAcalibration->setEnabled(true);
+    m_serialRxBuffer.clear();
+    m_waitingForPn168 = true;
+    m_pn168StartMs = QDateTime::currentMSecsSinceEpoch();
+    m_heartbeatTimer->stop();  // 读取参数期间停止心跳，避免干扰设备推送
+    const quint8 readAllCmd[] = { 0x55, 0x55, 0xFE, 0xFE, 0xEF, 0xEF, 0xAA, 0xAA };
+    serial->write(reinterpret_cast<const char*>(readAllCmd), sizeof(readAllCmd));
+    ui->textEdit->append("正在读取 PN168，请稍候，读取完成后标定按钮自动启用...");
 }
 void MainWindow::onehacalibrationButtonClicked()
 {
@@ -600,31 +545,19 @@ void MainWindow::onehacalibrationButtonClicked()
                                  .arg(forwardActual[i], 0, 'f', 1));
     }
 
-    // 反向采集 100N → 10N，结果按正序（对应 forces[i]）存储
-    QVector<double> reverseActual(forces.size(), 0.0);
-    ui->textEdit->append("\n[反向采集] 100N → 10N:");
-    for (int i = forces.size() - 1; i >= 0; --i) {
-        settleForce(forces[i]);
-        MainWindow::delayMS(2000);
-        reverseActual[i] = sensorforceValue / 10.0;
-        ui->textEdit->append(QString("  设定 %1N → 实际 %2N")
-                                 .arg(forces[i])
-                                 .arg(reverseActual[i], 0, 'f', 1));
-    }
-
-    // 构建拟合点集
-    // x = 正反向平均实际力
+    // 构建拟合点集（仅正向）
+    // x = 正向实际力
     // y = 模块内部识别数值 = K_original / 10 * 设定力
-    ui->textEdit->append("\n[拟合数据]  设定力 | 平均实际力 | 内部识别值");
+    ui->textEdit->append("\n[拟合数据]  设定力 | 实际力 | 内部识别值");
     QVector<double> xVec, yVec;
     for (int i = 0; i < forces.size(); ++i) {
-        double avgForce    = (forwardActual[i] + reverseActual[i]) / 2.0;
+        double actualForce = forwardActual[i];
         double internalVal = K_original / 10.0 * forces[i];
-        xVec.append(avgForce);
+        xVec.append(actualForce);
         yVec.append(internalVal);
         ui->textEdit->append(QString("  %1N | %2N | %3")
                                  .arg(forces[i],    4)
-                                 .arg(avgForce,     7, 'f', 1)
+                                 .arg(actualForce,  7, 'f', 1)
                                  .arg(internalVal,  9, 'f', 1));
     }
 
@@ -645,18 +578,40 @@ void MainWindow::onehacalibrationButtonClicked()
     }
     double new_K = (n * sum_xy - sum_x * sum_y) / denom;
     double new_B = (sum_y - new_K * sum_x) / n;
+    new_K=new_K*10;
+
+    // 将 new_B（内部单位）换算为力（N），再换算为 PN169 逻辑值
+    // 内部单位 = K_original/10 × N，故 B_force_N = new_B × 10 / K_original
+    // PN169 与力的关系（来自标定报告）：PN169 = F(N) × 132
+    static constexpr double PN169_SCALE = 132.0;
+    double  B_force_N = new_B * 10.0 / K_original;          // 换算为 N
+    int     B_logical = qRound(B_force_N * PN169_SCALE);    // 换算为 PN169 逻辑值
+
+    // PN169 编码：正数直接写，负数写 10000 + |值|（设备十进制符号位）
+    quint16 B_write;
+    if (B_logical >= 0) {
+        B_write = static_cast<quint16>(qMin(B_logical, 9999));
+    } else {
+        B_write = static_cast<quint16>(10000 + qMin(qAbs(B_logical), 9999));
+    }
 
     ui->textEdit->append("\n[拟合结果]");
     ui->textEdit->append(QString("  新K值 = %1  (写入PN168)").arg(new_K, 0, 'f', 4));
-    ui->textEdit->append(QString("  新B值 = %1  (写入PN169)").arg(new_B, 0, 'f', 4));
+    ui->textEdit->append(QString("  新B值 = %1 (内部单位) → %2 N → PN169逻辑值: %3 → 写入: %4")
+                             .arg(new_B,     0, 'f', 2)
+                             .arg(B_force_N, 0, 'f', 3)
+                             .arg(B_logical)
+                             .arg(B_write));
 
-    // 写入设备：K四舍五入取整写PN168，B按有符号16位写PN169
+    // 写入K值到PN168
     quint16 K_write = static_cast<quint16>(qRound(new_K));
-    quint16 B_write = static_cast<quint16>(static_cast<int16_t>(qRound(new_B)));
     sendData(168, K_write);
-    // sendData(169, B_write);
     ui->textEdit->append(QString("  PN168 ← %1").arg(K_write));
-    ui->textEdit->append(QString("  PN169 ← %1").arg(static_cast<int16_t>(B_write)));
+
+    // 写入B值到PN169（换算后编码写入）
+    sendData(169, B_write);
+    ui->textEdit->append(QString("  PN169 ← %1  (逻辑值: %2 N × 132 = %3)")
+                             .arg(B_write).arg(B_force_N, 0, 'f', 3).arg(B_logical));
 
     settleForce(0);
     sendData(152, 1);
@@ -739,9 +694,9 @@ void MainWindow::onEHAzeroButtonClicked()
 void MainWindow::onEHAmassconfirmButtonClicked()
 {
     int EHAmass = ui->EHAmass->text().toInt();
+    sendData(160,0);
     sendData(170,EHAmass);
     ui->textEdit->append("步骤五:质量补偿已录入 观察数显屏数值 显示值为0则标定完毕\n(注:质量补偿可多次录入调试)");
-
 }
 
 void MainWindow::delayMS(int ms)
@@ -851,8 +806,12 @@ void MainWindow::on_ForwardStep4_clicked(bool checked) {
 
 void MainWindow::onSerialReadyRead()
 {
-    qDebug() << "[串口 RX] readyRead 触发";
     QByteArray newBytes = serial->readAll();
+
+    // if (m_captureOnce && !newBytes.isEmpty()) {
+    //     qDebug() << "[握手响应帧]" << newBytes.size() << "字节:" << newBytes.toHex(' ');
+    // }
+
     static qint64 lastRxPrint = 0;
     qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (now - lastRxPrint >= 1000) {
@@ -860,6 +819,35 @@ void MainWindow::onSerialReadyRead()
         lastRxPrint = now;
     }
     m_serialRxBuffer.append(newBytes);
+
+    // 异步等待 PN168：只扫描新增区域（含跨包边界的6字节重叠）
+    if (m_waitingForPn168) {
+        int scanFrom = qMax(0, m_serialRxBuffer.size() - newBytes.size() - 6);
+        for (int i = scanFrom; i <= m_serialRxBuffer.size() - 7; ++i) {
+            if ((quint8)m_serialRxBuffer[i]   == 0xEF &&
+                (quint8)m_serialRxBuffer[i+1] == 0xAD &&
+                (quint8)m_serialRxBuffer[i+2] == 0xAA) {
+                quint16 pn  = ((quint8)m_serialRxBuffer[i+3] << 8) | (quint8)m_serialRxBuffer[i+4];
+                quint16 val = ((quint8)m_serialRxBuffer[i+5] << 8) | (quint8)m_serialRxBuffer[i+6];
+                qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_pn168StartMs;
+                qDebug() << QString("+%1ms  Pn%2 = %3")
+                                .arg(elapsed, 6)
+                                .arg(pn, 3, 10, QChar('0'))
+                                .arg(val);
+                if (pn == 0x00A8) {  // PN168
+                    m_pn168K = val;
+                    // ui->textEdit->append(QString("PN168 读取成功，原始K值: %1，等待全部参数接收完毕...").arg(m_pn168K));
+                    ui->EHAcalibration->setEnabled(true);
+                }
+                if (pn == 0x00C7) {  // PN199，最后一个参数
+                    m_waitingForPn168 = false;
+                    m_heartbeatTimer->start(100);  // 全部参数接收完毕，恢复心跳
+                    ui->textEdit->append("参数读取完毕");
+                    break;
+                }
+            }
+        }
+    }
 
     for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
         if ((quint8)m_serialRxBuffer[i]   != 0xEF ||
@@ -954,4 +942,15 @@ void MainWindow::sendHeartbeat()
     if (!serial->isOpen()) return;
     const quint8 hb[] = { 0x55, 0x55, 0xB6, 0xB6, 0x7B, 0x7B, 0xAA, 0xAA };
     serial->write(reinterpret_cast<const char*>(hb), sizeof(hb));
+}
+
+void MainWindow::onSwitchEthercatButtonClicked()
+
+{
+    if (!serial->isOpen()) {
+        ui->textEdit->append("错误：请先连接串口！");
+        return;
+    }
+    sendData(160, 1);
+    ui->textEdit->append("已切换为 EtherCAT 控制模式 (PN160 ← 1)");
 }
