@@ -53,18 +53,23 @@ private:
     QChartView *m_chartView;
     QLineSeries *m_series;
     QVector<QPair<quint16, qreal>> m_testResults; // 存储测试结果(设定力,偏差)
+    QVector<quint16> m_testForwardValues;   // EHA检测正向实际力（写入报告C列）
+    QVector<quint16> m_testReverseValues;   // EHA检测反向实际力（写入报告D列）
+    QVector<quint16> m_calibForwardValues;  // 从设备读取的PN140~PN149（写入报告H列）
+    QVector<quint16> m_calibReverseValues;  // 从设备读取的PN180~PN189（写入报告J列）
+    quint16 m_pn170Value = 0;               // 从设备读取的PN170（写入报告E6）
+    void exportCalibrationReport(const QString &savePath, const QString &deviceId);
+    bool readCalibParamsFromDevice();
+    bool m_waitingForCalibParams = false;
 
     //UI动画
     QPropertyAnimation *m_tabAnimation;
     bool m_fadeAnimationActive = false; // 用于防止动画重叠
     void applyFadeAnimation(QTabWidget* tabWidget, int fromIndex, int toIndex);
 
-    // 串口接收缓冲 & 读取到的 PN168 原始K值
+    // 串口接收缓冲
     QByteArray m_serialRxBuffer;
-    double m_pn168K = 0.0;
     bool m_captureOnce = false;
-    bool m_waitingForPn168 = false;
-    qint64 m_pn168StartMs = 0;
 
 private slots:
     //标定相关
@@ -97,5 +102,8 @@ private slots:
     void onSerialReadyRead();
     void sendHeartbeat();
     void onSwitchEthercatButtonClicked();
+
+signals:
+    void calibParamsReadFinished();
 };
 #endif // MAINWINDOW_H

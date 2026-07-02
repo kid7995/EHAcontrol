@@ -9,8 +9,8 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets SerialPort SerialBus Network Charts)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets SerialPort SerialBus Network Charts)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets SerialPort SerialBus Network Charts AxContainer)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets SerialPort SerialBus Network Charts AxContainer)
 
 set(PROJECT_SOURCES
         main.cpp
@@ -50,7 +50,15 @@ target_link_libraries(EHAcontrol PRIVATE
     Qt${QT_VERSION_MAJOR}::SerialBus
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Charts
+    Qt${QT_VERSION_MAJOR}::AxContainer
     ws2_32
+)
+
+# 标定报告模板需以真实文件形式随可执行文件一同部署（QAxObject 需要打开磁盘文件）
+add_custom_command(TARGET EHAcontrol POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/ECM1B2000标定报告.xlsx"
+        "$<TARGET_FILE_DIR:EHAcontrol>/ECM1B2000标定报告.xlsx"
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.

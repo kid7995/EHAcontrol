@@ -3,6 +3,13 @@
 #include <QDebug>
 #include <QPropertyAnimation>
 #include <QGraphicsOpacityEffect>
+#include <QAxObject>
+#include <QCoreApplication>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFile>
+#include <QInputDialog>
+#include <QLineEdit>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -69,8 +76,6 @@ void MainWindow::initActions()
             this, &MainWindow::onEHAtestButtonClicked);
     connect(ui->EHAtest_2, &QPushButton::clicked,
             this, &MainWindow::onEHAtestButtonClicked);
-    connect(ui->SwitchEthercatBtn, &QPushButton::clicked,
-            this, &MainWindow::onSwitchEthercatButtonClicked);
     connect(serial, &QSerialPort::readyRead,
             this, &MainWindow::onSerialReadyRead);
 }
@@ -183,24 +188,25 @@ void MainWindow::onEHAtestButtonClicked()
         ui->textEdit->append("错误：请先连接串口！");
         return;
     }
-    //切换到串口控制模式
-    sendData(160,0);
-    delayMS(1000);
     ui->textEdit->append("开始EHA检测流程...");
 
     // 清空之前的结果
     m_testResults.clear();
 
-    // 定义正向测试力值序列
+    // 定义测试力值序列（含0点基准），正反向共用同一组数值
     //浮动模块测试
-    const QVector<quint16> testForces = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+    // const QVector<quint16> testForces = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
     //滚压设备测试
-    // const QVector<quint16> testForces = {200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
+    const QVector<quint16> testForces = {0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
 
-    // 正向测试(从小到大)
+    m_testForwardValues.fill(0, testForces.size());
+    m_testReverseValues.fill(0, testForces.size());
+
+    // 正向测试(从小到大)，实际力写入 m_testForwardValues（对应报告C8~C18）
     ui->textEdit->append("\n正向测试:");
     qreal maxDeviation = 0.0; // 用于存储最大偏差值
-    for (quint16 force : testForces) {
+    for (int i = 0; i < testForces.size(); ++i) {
+        quint16 force = testForces[i];
         settleForce(force);
         delayMS(2000);
 
@@ -209,7 +215,8 @@ void MainWindow::onEHAtestButtonClicked()
             continue;
         }
 
-        quint16 actualForce = sensorforceValue / 10.0;
+        quint16 actualForce = qRound(sensorforceValue / 10.0);
+        m_testForwardValues[i] = actualForce;
         qreal deviation = (qreal)actualForce - (qreal)force;
         m_testResults.append({force, deviation});
 
@@ -221,6 +228,24 @@ void MainWindow::onEHAtestButtonClicked()
         ui->textEdit->append(QString("设定力: %1N, 实际力: %2N, 偏差: %3N")
                                  .arg(force).arg(actualForce).arg(deviation, 0, 'f', 1));
     }
+
+    // 反向测试(从大到小)，实际力写入 m_testReverseValues（对应报告D18~D8）
+    ui->textEdit->append("\n反向测试:");
+    for (int i = testForces.size() - 1; i >= 0; --i) {
+        quint16 force = testForces[i];
+        settleForce(force);
+        delayMS(2000);
+
+        if (!sensorforceValue) {
+            ui->textEdit->append("错误：无法读取到传感器数值!");
+            continue;
+        }
+
+        quint16 actualForce = qRound(sensorforceValue / 10.0);
+        m_testReverseValues[i] = actualForce;
+        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N").arg(force).arg(actualForce));
+    }
+
     ui->textEdit->append(QString("\n最大偏差: %1N").arg(maxDeviation, 0, 'f', 1));
 
     // 绘制偏差曲线图，并传递最大偏差值
@@ -228,8 +253,6 @@ void MainWindow::onEHAtestButtonClicked()
 
     // 测试完成后力值归零
     settleForce(0);
-    //切换到ethercat控制模式
-    delayMS(1000);
 }
 
 // 修改 showDeviationChart 函数，接收 maxDeviation 参数
@@ -323,7 +346,7 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
     resultLabel->setMinimumHeight(40);
 
     QString resultMessage;
-    if (qAbs(maxDeviation) < 7.5) {
+    if (qAbs(maxDeviation) < 30) {
         resultMessage = "<font size='5' color='#4CAF50'>✓ 测试通过 (最大偏差: %1)</font>";
         resultLabel->setStyleSheet(
             "background-color: #E8F5E9;"
@@ -364,6 +387,27 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
     saveButton->setCursor(Qt::PointingHandCursor);
     resultLayout->addWidget(saveButton);  // 保存按钮靠右
 
+    // 输出标定报告按钮
+    QPushButton *exportReportButton = new QPushButton("输出标定报告");
+    exportReportButton->setStyleSheet(
+        "QPushButton {"
+        "   background-color: #4CAF50;"
+        "   color: white;"
+        "   border: none;"
+        "   border-radius: 4px;"
+        "   padding: 8px 16px;"
+        "   font-size: 14px;"
+        "}"
+        "QPushButton:hover {"
+        "   background-color: #388E3C;"
+        "}"
+        "QPushButton:pressed {"
+        "   background-color: #2E7D32;"
+        "}"
+        );
+    exportReportButton->setCursor(Qt::PointingHandCursor);
+    resultLayout->addWidget(exportReportButton);
+
     layout->addLayout(resultLayout);  // 添加结果区域到底部
 
     // 保存按钮连接
@@ -384,7 +428,159 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
         }
     });
 
+    // 输出标定报告按钮连接
+    connect(exportReportButton, &QPushButton::clicked, this, [this]() {
+        bool ok = false;
+        QString deviceId = QInputDialog::getText(
+            this,
+            "设备编号",
+            "请输入本设备编号(如 D00025):",
+            QLineEdit::Normal,
+            "",
+            &ok
+            );
+        if (!ok) {
+            return;
+        }
+
+        if (!readCalibParamsFromDevice()) {
+            return;
+        }
+        QString fileName = QFileDialog::getSaveFileName(
+            this,
+            "保存标定报告",
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/标定报告.xlsx",
+            "Excel 工作簿 (*.xlsx)"
+            );
+        if (!fileName.isEmpty()) {
+            exportCalibrationReport(fileName, deviceId);
+        }
+    });
+
     chartDialog->exec();
+}
+
+bool MainWindow::readCalibParamsFromDevice()
+{
+    if (!serial->isOpen()) {
+        ui->textEdit->append("错误：串口未连接，无法读取PN参数！");
+        return false;
+    }
+
+    m_calibForwardValues.fill(0, 10);  // PN140~PN149
+    m_calibReverseValues.fill(0, 10);  // PN180~PN189
+    m_pn170Value = 0;                  // PN170
+    m_serialRxBuffer.clear();
+    m_waitingForCalibParams = true;
+    m_heartbeatTimer->stop();  // 读取参数期间停止心跳，避免干扰设备推送
+
+    const quint8 readAllCmd[] = { 0x55, 0x55, 0xFE, 0xFE, 0xEF, 0xEF, 0xAA, 0xAA };
+    serial->write(reinterpret_cast<const char*>(readAllCmd), sizeof(readAllCmd));
+    ui->textEdit->append("正在读取设备 PN140~149 / PN180~189 / PN170 参数，请稍候...");
+
+    QEventLoop loop;
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(this, &MainWindow::calibParamsReadFinished, &loop, &QEventLoop::quit);
+    timeoutTimer.start(5000);  // 5秒超时
+    loop.exec();
+
+    m_heartbeatTimer->start(100);
+
+    if (m_waitingForCalibParams) {
+        m_waitingForCalibParams = false;
+        ui->textEdit->append("错误：读取PN140~149/PN180~189参数超时，请检查设备连接！");
+        return false;
+    }
+    ui->textEdit->append("PN140~149 / PN180~189 参数读取完毕");
+    return true;
+}
+
+void MainWindow::exportCalibrationReport(const QString &savePath, const QString &deviceId)
+{
+    if (m_testForwardValues.size() < 11 || m_testReverseValues.size() < 11) {
+        ui->textEdit->append("错误：EHA检测数据不完整，请先完成一次EHA检测！");
+        return;
+    }
+    if (m_calibForwardValues.size() < 10 || m_calibReverseValues.size() < 10) {
+        ui->textEdit->append("错误：PN参数读取不完整！");
+        return;
+    }
+
+    const QString templatePath = QCoreApplication::applicationDirPath() + "/ECM1B2000标定报告.xlsx";
+    if (!QFile::exists(templatePath)) {
+        ui->textEdit->append("错误：未找到标定报告模板：" + templatePath);
+        return;
+    }
+
+    QAxObject excel("Excel.Application");
+    if (excel.isNull()) {
+        ui->textEdit->append("错误：无法启动 Excel，请确认本机已安装 Microsoft Excel！");
+        return;
+    }
+    excel.setProperty("Visible", false);
+    excel.setProperty("DisplayAlerts", false);
+
+    QAxObject *workbooks = excel.querySubObject("Workbooks");
+    QAxObject *workbook = workbooks->querySubObject("Open(const QString&)", QDir::toNativeSeparators(templatePath));
+    if (!workbook) {
+        ui->textEdit->append("错误：无法打开标定报告模板！");
+        excel.dynamicCall("Quit()");
+        return;
+    }
+
+    QAxObject *sheets = workbook->querySubObject("Worksheets");
+    QAxObject *sheet = sheets->querySubObject("Item(int)", 1); // 第一张表"耐久测试"
+
+    // 设备编号 → B2(与F2合并)
+    QAxObject *deviceCell = sheet->querySubObject("Cells(int,int)", 2, 2);
+    deviceCell->setProperty("Value", deviceId);
+    delete deviceCell;
+
+    // PN170 → E6
+    QAxObject *pn170Cell = sheet->querySubObject("Cells(int,int)", 6, 5);
+    pn170Cell->setProperty("Value", m_pn170Value);
+    delete pn170Cell;
+
+    // 正向实际力 → C8~C18
+    for (int i = 0; i < m_testForwardValues.size(); ++i) {
+        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 3);
+        cell->setProperty("Value", m_testForwardValues[i]);
+        delete cell;
+    }
+
+    // 反向实际力 → D8~D18（同一行对应同一设定力档位）
+    for (int i = 0; i < m_testReverseValues.size(); ++i) {
+        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 4);
+        cell->setProperty("Value", m_testReverseValues[i]);
+        delete cell;
+    }
+
+    // PN140~PN149 → H8~H17
+    for (int i = 0; i < m_calibForwardValues.size(); ++i) {
+        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 8);
+        cell->setProperty("Value", m_calibForwardValues[i]);
+        delete cell;
+    }
+
+    // PN180~PN189 → J8~J17
+    for (int i = 0; i < m_calibReverseValues.size(); ++i) {
+        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 10);
+        cell->setProperty("Value", m_calibReverseValues[i]);
+        delete cell;
+    }
+
+    workbook->dynamicCall("SaveAs(const QString&)", QDir::toNativeSeparators(savePath));
+    workbook->dynamicCall("Close()");
+    excel.dynamicCall("Quit()");
+
+    delete sheet;
+    delete sheets;
+    delete workbook;
+    delete workbooks;
+
+    ui->textEdit->append("标定报告已保存至：" + savePath);
 }
 
 void MainWindow::onehaconnectButtonClicked()
@@ -424,6 +620,7 @@ void MainWindow::onehaconnectButtonClicked()
 
     ui->EHAreset->setEnabled(true);   // 测试用 之后删掉
     ui->EHAcalibration->setEnabled(true); //测试用 之后删掉
+    ui->EHAzero->setEnabled(false);
 
 
     // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/初始化姿态.png");
@@ -485,31 +682,24 @@ void MainWindow::oneharesetButtonClicked()
     ui->textEdit->append("步骤二:EHA初始化。。。");
     sendData(0,9999);
     sendData(169, 0);
-    // pn160=0 串口控制模式
-    sendData(160,0);
+    sendData(172, 2);
     ui->textEdit->append("内参初始化完毕");
     //质量清零
     sendData(48, 0);
     sendData(170, 0);
     ui->textEdit->append("质量初始化完毕");
     //pn102清零
-    sendData(44, 100);
+    sendData(44, 200);
     MainWindow::delayMS(2000);
     sendData(102, 1);
     sendData(102, 0);
     sendData(44, 0);
+    sendData(152, 0);// 切换到标定模式
     sendData(2,81); //数显屏设置为显示位移量
     ui->textEdit->append("设定力初始化完毕\n标定时设备需接触力传感器，并下压至数显屏数值在0(位移零点)左右");
 
-    // 发送全参数读取命令，在 onSerialReadyRead 中异步等待 PN168
-    m_pn168K = 0.0;
-    m_serialRxBuffer.clear();
-    m_waitingForPn168 = true;
-    m_pn168StartMs = QDateTime::currentMSecsSinceEpoch();
-    m_heartbeatTimer->stop();  // 读取参数期间停止心跳，避免干扰设备推送
-    const quint8 readAllCmd[] = { 0x55, 0x55, 0xFE, 0xFE, 0xEF, 0xEF, 0xAA, 0xAA };
-    serial->write(reinterpret_cast<const char*>(readAllCmd), sizeof(readAllCmd));
-    ui->textEdit->append("正在读取 PN168，请稍候，读取完成后标定按钮自动启用...");
+    ui->EHAcalibration->setEnabled(true);
+    ui->textEdit->append("初始化完成，机器人下压到位后点击《EHA标定》按钮开始标定");
 }
 void MainWindow::onehacalibrationButtonClicked()
 {
@@ -517,108 +707,43 @@ void MainWindow::onehacalibrationButtonClicked()
         ui->textEdit->append("错误：请先连接串口！");
         return;
     }
-
-    // 使用初始化阶段读取到的 PN168 原始K值
-    if (m_pn168K < 1.0) {
-        ui->textEdit->append("错误：PN168 原始K值未获取，请先执行步骤二（EHA初始化）！");
-        return;
-    }
-    double K_original = m_pn168K;
-
     settleForce(0);
     ui->textEdit->clear();
-    ui->textEdit->append("步骤三:启动线性标定流程...");
-    ui->textEdit->append(QString("原始K值(PN168): %1").arg(K_original));
+    ui->textEdit->append("步骤三:启动十段力标定流程（机器人已下压到位）...");
 
-    // 标定力值序列 10N ~ 100N，步进 10N
-    const QVector<quint16> forces = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+    // 十档设定力值：1000 ~ 9999
+    const QVector<quint16> forces = {1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 9999};
 
-    // 正向采集 10N → 100N
-    QVector<double> forwardActual(forces.size(), 0.0);
-    ui->textEdit->append("\n[正向采集] 10N → 100N:");
+    // 正向：1000 → 9999，依次写入 PN140 ~ PN149
+    ui->textEdit->append("\n[正向标定] 1000 → 9999，写入 PN140~PN149:");
     for (int i = 0; i < forces.size(); ++i) {
         settleForce(forces[i]);
         MainWindow::delayMS(2000);
-        forwardActual[i] = sensorforceValue / 10.0;
-        ui->textEdit->append(QString("  设定 %1N → 实际 %2N")
-                                 .arg(forces[i])
-                                 .arg(forwardActual[i], 0, 'f', 1));
+        quint16 pn = 140 + i;
+        quint16 forceRounded = qRound(sensorforceValue / 10.0);
+        sendData(pn, forceRounded);
+        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
+                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
     }
 
-    // 构建拟合点集（仅正向）
-    // x = 正向实际力
-    // y = 模块内部识别数值 = K_original / 10 * 设定力
-    ui->textEdit->append("\n[拟合数据]  设定力 | 实际力 | 内部识别值");
-    QVector<double> xVec, yVec;
-    for (int i = 0; i < forces.size(); ++i) {
-        double actualForce = forwardActual[i];
-        double internalVal = K_original / 10.0 * forces[i];
-        xVec.append(actualForce);
-        yVec.append(internalVal);
-        ui->textEdit->append(QString("  %1N | %2N | %3")
-                                 .arg(forces[i],    4)
-                                 .arg(actualForce,  7, 'f', 1)
-                                 .arg(internalVal,  9, 'f', 1));
+    // 反向：9999 → 1000，依次写入 PN189 ~ PN180
+    ui->textEdit->append("\n[反向标定] 9999 → 1000，写入 PN189~PN180:");
+    for (int i = forces.size() - 1; i >= 0; --i) {
+        settleForce(forces[i]);
+        MainWindow::delayMS(2000);
+        quint16 pn = 180 + i;
+        quint16 forceRounded = qRound(sensorforceValue / 10.0);
+        sendData(pn, forceRounded);
+        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
+                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
     }
-
-    // 最小二乘线性拟合: y = new_K * x + new_B
-    int    n     = xVec.size();
-    double sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
-    for (int i = 0; i < n; ++i) {
-        sum_x  += xVec[i];
-        sum_y  += yVec[i];
-        sum_xy += xVec[i] * yVec[i];
-        sum_x2 += xVec[i] * xVec[i];
-    }
-    double denom = n * sum_x2 - sum_x * sum_x;
-    if (qAbs(denom) < 1e-9) {
-        ui->textEdit->append("错误：线性拟合失败，数据点无效！");
-        settleForce(0);
-        return;
-    }
-    double new_K = (n * sum_xy - sum_x * sum_y) / denom;
-    double new_B = (sum_y - new_K * sum_x) / n;
-    new_K=new_K*10;
-
-    // 将 new_B（内部单位）换算为力（N），再换算为 PN169 逻辑值
-    // 内部单位 = K_original/10 × N，故 B_force_N = new_B × 10 / K_original
-    // PN169 与力的关系（来自标定报告）：PN169 = F(N) × 132
-    static constexpr double PN169_SCALE = 132.0;
-    double  B_force_N = new_B * 10.0 / K_original;          // 换算为 N
-    int     B_logical = qRound(B_force_N * PN169_SCALE);    // 换算为 PN169 逻辑值
-
-    // PN169 编码：正数直接写，负数写 10000 + |值|（设备十进制符号位）
-    quint16 B_write;
-    if (B_logical >= 0) {
-        B_write = static_cast<quint16>(qMin(B_logical, 9999));
-    } else {
-        B_write = static_cast<quint16>(10000 + qMin(qAbs(B_logical), 9999));
-    }
-
-    ui->textEdit->append("\n[拟合结果]");
-    ui->textEdit->append(QString("  新K值 = %1  (写入PN168)").arg(new_K, 0, 'f', 4));
-    ui->textEdit->append(QString("  新B值 = %1 (内部单位) → %2 N → PN169逻辑值: %3 → 写入: %4")
-                             .arg(new_B,     0, 'f', 2)
-                             .arg(B_force_N, 0, 'f', 3)
-                             .arg(B_logical)
-                             .arg(B_write));
-
-    // 写入K值到PN168
-    quint16 K_write = static_cast<quint16>(qRound(new_K));
-    sendData(168, K_write);
-    ui->textEdit->append(QString("  PN168 ← %1").arg(K_write));
-
-    // 写入B值到PN169（换算后编码写入）
-    sendData(169, B_write);
-    ui->textEdit->append(QString("  PN169 ← %1  (逻辑值: %2 N × 132 = %3)")
-                             .arg(B_write).arg(B_force_N, 0, 'f', 3).arg(B_logical));
 
     settleForce(0);
     sendData(152, 1);
     sendData(2, 79);
-    ui->textEdit->append("\n数据录入完毕，设备调节为力控模式");
+    ui->textEdit->append("\n十段力标定写入完毕，标定完成");
     ui->textEdit->append("步骤四：操作机器人，滚压设备调整为水平姿态（数显屏数值为0），执行力矩清零");
-    ui->EHAzero->setEnabled(true);
+    ui->EHAzero->setEnabled(false);
 }
 
 void MainWindow::sendData(quint16 pn, quint16 value)
@@ -820,8 +945,8 @@ void MainWindow::onSerialReadyRead()
     }
     m_serialRxBuffer.append(newBytes);
 
-    // 异步等待 PN168：只扫描新增区域（含跨包边界的6字节重叠）
-    if (m_waitingForPn168) {
+    // 异步等待 PN140~149 / PN180~189：只扫描新增区域（含跨包边界的6字节重叠）
+    if (m_waitingForCalibParams) {
         int scanFrom = qMax(0, m_serialRxBuffer.size() - newBytes.size() - 6);
         for (int i = scanFrom; i <= m_serialRxBuffer.size() - 7; ++i) {
             if ((quint8)m_serialRxBuffer[i]   == 0xEF &&
@@ -829,20 +954,16 @@ void MainWindow::onSerialReadyRead()
                 (quint8)m_serialRxBuffer[i+2] == 0xAA) {
                 quint16 pn  = ((quint8)m_serialRxBuffer[i+3] << 8) | (quint8)m_serialRxBuffer[i+4];
                 quint16 val = ((quint8)m_serialRxBuffer[i+5] << 8) | (quint8)m_serialRxBuffer[i+6];
-                qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_pn168StartMs;
-                qDebug() << QString("+%1ms  Pn%2 = %3")
-                                .arg(elapsed, 6)
-                                .arg(pn, 3, 10, QChar('0'))
-                                .arg(val);
-                if (pn == 0x00A8) {  // PN168
-                    m_pn168K = val;
-                    // ui->textEdit->append(QString("PN168 读取成功，原始K值: %1，等待全部参数接收完毕...").arg(m_pn168K));
-                    ui->EHAcalibration->setEnabled(true);
+                if (pn >= 140 && pn <= 149) {
+                    m_calibForwardValues[pn - 140] = val;
+                } else if (pn >= 180 && pn <= 189) {
+                    m_calibReverseValues[pn - 180] = val;
+                } else if (pn == 170) {
+                    m_pn170Value = val;
                 }
                 if (pn == 0x00C7) {  // PN199，最后一个参数
-                    m_waitingForPn168 = false;
-                    m_heartbeatTimer->start(100);  // 全部参数接收完毕，恢复心跳
-                    ui->textEdit->append("参数读取完毕");
+                    m_waitingForCalibParams = false;
+                    emit calibParamsReadFinished();
                     break;
                 }
             }
