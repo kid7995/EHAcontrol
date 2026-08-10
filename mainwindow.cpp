@@ -682,7 +682,7 @@ void MainWindow::oneharesetButtonClicked()
     ui->textEdit->append("步骤二:EHA初始化。。。");
     sendData(0,9999);
     sendData(169, 0);
-    sendData(172, 2);
+    sendData(172, 3);
     ui->textEdit->append("内参初始化完毕");
     //质量清零
     sendData(48, 0);
