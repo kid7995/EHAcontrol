@@ -1,16 +1,17 @@
 #include "mainwindow.h"
 
 #include <QApplication>
-#include <QNetworkProxyFactory>
-#include <QNetworkProxy>
+#include <QFont>
 
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("KaiserStudio Qt"));
+    QApplication::setOrganizationName(QStringLiteral("Saiwider"));
+    QApplication::setApplicationVersion(QStringLiteral("0.2"));
 
-    QNetworkProxy proxy;
-    proxy.setType(QNetworkProxy::NoProxy); // 设置代理类型为“无代理”
-    QNetworkProxy::setApplicationProxy(proxy); // 将此“无代理”对象设置为应用程序的默认代理
+    QFont font(QStringLiteral("Microsoft YaHei UI"), 9);
+    QApplication::setFont(font);
 
     MainWindow w;
     w.show();

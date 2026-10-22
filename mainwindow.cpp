@@ -1,1077 +1,1036 @@
 #include "mainwindow.h"
-#include "./ui_mainwindow.h"
-#include <QDebug>
-#include <QPropertyAnimation>
-#include <QGraphicsOpacityEffect>
-#include <QAxObject>
-#include <QCoreApplication>
-#include <QStandardPaths>
-#include <QDir>
-#include <QFile>
-#include <QInputDialog>
-#include <QLineEdit>
+
+#include "communicationpage.h"
+#include "dashboardpage.h"
+#include "driveinfopage.h"
+#include "monitorpage.h"
+#include "parametermodel.h"
+#include "parameterpage.h"
+
+#include <QAbstractButton>
+#include <QButtonGroup>
+#include <QCloseEvent>
+#include <QComboBox>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QShortcut>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QStyle>
+#include <QVariant>
+#include <QVBoxLayout>
+
+namespace {
+
+QLabel *navSectionLabel(const QString &text, QWidget *parent)
+{
+    auto *label = new QLabel(text.toUpper(), parent);
+    label->setObjectName(QStringLiteral("navSection"));
+    return label;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
-    , serial(new QSerialPort(this))
-    , tcpSocket(new QTcpSocket(this)) //报文
-    , m_readTimer(new QTimer(this))  //报文
-    , m_heartbeatTimer(new QTimer(this))
-
+    , m_serial(new DeviceSerialService(this))
+    , m_parameterModel(new ParameterModel(this))
 {
-    ui->setupUi(this);
-    centralWidget()->setFixedSize(1280, 720);
-    setWindowIcon(QIcon(":/pic/image/logo.ico"));
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 0);
-    setWindowTitle("赛威德EHA自主标定系统");
+    createInterface();
+    applyStyle();
 
-    showImage(":/pic/image/Connection status.png");
-    ui->STEP1->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-    // ui->tabWidget->tabBar()->hide();
-    m_tabAnimation = new QPropertyAnimation(ui->tabWidget, "currentIndex", this);
-    m_tabAnimation->setDuration(300);
-    m_tabAnimation->setEasingCurve(QEasingCurve::InOutQuad);
+    connect(m_serial, &DeviceSerialService::connectionChanged,
+            this, &MainWindow::setConnectionState);
+    connect(m_serial, &DeviceSerialService::telemetryUpdated,
+            this, &MainWindow::handleTelemetry);
+    connect(m_serial, &DeviceSerialService::parameterValueReceived,
+            m_parameterModel, &ParameterModel::setRemoteValue);
+    connect(m_serial, &DeviceSerialService::parameterValueReceived,
+            m_driveInfoPage, &DriveInfoPage::setParameterValue);
+    connect(m_serial, &DeviceSerialService::parameterReadProgress,
+            m_parameterPage, &ParameterPage::setReadProgress);
+    connect(m_serial, &DeviceSerialService::parameterReadProgress,
+            m_dashboard, &DashboardPage::setReadProgress);
+    connect(m_serial, &DeviceSerialService::parameterReadProgress,
+            m_driveInfoPage, [this](int received, int) {
+                m_driveInfoPage->setParameterReadCount(received);
+            });
+    connect(m_serial, &DeviceSerialService::parameterReadFinished,
+            this, &MainWindow::handleParameterReadFinished);
+    connect(m_serial, &DeviceSerialService::frameLogged,
+            m_communicationPage, &CommunicationPage::logFrame);
+    connect(m_serial, &DeviceSerialService::errorOccurred,
+            this, &MainWindow::handleSerialError);
 
-    // 初始化时禁用相关按钮
-    ui->EHAreset->setEnabled(false);
-    ui->EHAcalibration->setEnabled(false);
-    ui->EHAzero->setEnabled(false);
-    ui->EHAmassconfirm->setEnabled(true);
-    // ui->EHAtest_2->setEnabled(false);
-    // ui->EHAtest->setEnabled(false);
+    connect(m_communicationPage, &CommunicationPage::openRequested,
+            this, &MainWindow::openSerial);
+    connect(m_communicationPage, &CommunicationPage::disconnectRequested,
+            this, &MainWindow::closeSerial);
+    connect(m_communicationPage, &CommunicationPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_communicationPage, &CommunicationPage::enableRequested,
+            m_serial, &DeviceSerialService::requestMotorEnable);
+    connect(m_communicationPage, &CommunicationPage::disableRequested,
+            m_serial, &DeviceSerialService::requestMotorDisable);
+    connect(m_communicationPage, &CommunicationPage::faultResetRequested,
+            m_serial, &DeviceSerialService::requestFaultReset);
+    connect(m_communicationPage, &CommunicationPage::saveRequested,
+            this, &MainWindow::requestParameterSave);
+    connect(m_communicationPage, &CommunicationPage::rawFrameRequested,
+            m_serial, &DeviceSerialService::sendFrame);
 
-    // 启动力传感器连接线程
+    connect(m_dashboard, &DashboardPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_dashboard, &DashboardPage::enableRequested,
+            m_serial, &DeviceSerialService::requestMotorEnable);
+    connect(m_dashboard, &DashboardPage::disableRequested,
+            m_serial, &DeviceSerialService::requestMotorDisable);
+    connect(m_dashboard, &DashboardPage::saveRequested,
+            this, &MainWindow::requestParameterSave);
+    connect(m_dashboard, &DashboardPage::openCommunicationRequested,
+            this, &MainWindow::showCommunicationPage);
+    connect(m_topMonitorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this]() {
+                if (m_connected) {
+                    m_serial->writeParameter(
+                        2, static_cast<quint16>(m_topMonitorCombo->currentData().toInt()));
+                }
+            });
 
-    initActions();
+    connect(m_parameterPage, &ParameterPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_parameterPage, &ParameterPage::writeDirtyRequested,
+            this, &MainWindow::writeDirtyParameters);
+    connect(m_parameterPage, &ParameterPage::writeAndSaveRequested,
+            this, &MainWindow::writeAndSaveParameters);
+    connect(m_parameterPage, &ParameterPage::statusMessage,
+            this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
+    connect(m_monitorPage, &MonitorPage::statusMessage,
+            this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
+    connect(m_driveInfoPage, &DriveInfoPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_parameterModel, &ParameterModel::dirtyStateChanged,
+            this, &MainWindow::updateDirtyStatus);
 
-    connect(tcpSocket, &QTcpSocket::readyRead, this, &MainWindow::onSocketReadyRead);
-    connect(m_readTimer, &QTimer::timeout, this, &MainWindow::readModbusData);
-    connect(m_heartbeatTimer, &QTimer::timeout, this, &MainWindow::sendHeartbeat);
-    connect(ui->tabWidget,&QTabWidget::currentChanged,this,&MainWindow::ontabwidgetindexchanged);
+    setWindowTitle(QStringLiteral("KaiserStudio Qt · 驱动器调试工作台"));
+    setMinimumSize(1180, 760);
+    resize(1440, 900);
+    updateDirtyStatus(0);
 }
 
-MainWindow::~MainWindow()
+MainWindow::~MainWindow() = default;
+
+void MainWindow::closeEvent(QCloseEvent *event)
 {
-    // 确保线程安全退出
-
-    delete ui;
-}
-
-void MainWindow::initActions()
-{
-    connect(ui->EHAconnect, &QPushButton::clicked,
-            this, &MainWindow::onehaconnectButtonClicked);
-    connect(ui->EHAreset, &QPushButton::clicked,
-            this, &MainWindow::oneharesetButtonClicked);
-    connect(ui->EHAcalibration, &QPushButton::clicked,
-            this, &MainWindow::onehacalibrationButtonClicked);
-    connect(ui->serialportrefresh, &QPushButton::clicked,
-            this, &MainWindow::onserialportrefreshButtonClicked);
-    connect(ui->EHAzero, &QPushButton::clicked,
-            this, &MainWindow::onEHAzeroButtonClicked);
-    connect(ui->EHAmassconfirm, &QPushButton::clicked,
-            this, &MainWindow::onEHAmassconfirmButtonClicked);
-    connect(ui->EHAtest, &QPushButton::clicked,
-            this, &MainWindow::onEHAtestButtonClicked);
-    connect(ui->EHAtest_2, &QPushButton::clicked,
-            this, &MainWindow::onEHAtestButtonClicked);
-    connect(serial, &QSerialPort::readyRead,
-            this, &MainWindow::onSerialReadyRead);
-}
-
-
-void MainWindow::onserialportrefreshButtonClicked()
-{
-    ui->serialportcomboBox->clear();
-
-    foreach (const QSerialPortInfo &info, QSerialPortInfo::availablePorts()) {
-        QString portInfo = info.portName();
-        if (!info.description().isEmpty()) {
-            portInfo += " - " + info.description();
-        }
-        ui->serialportcomboBox->addItem(portInfo);
-        // 将调试信息输出到 textEdit
-        QString message = QString("发现端口: %1").arg(info.portName());
-        ui->textEdit->append(message);
-    }
-
-    // 如果没有找到任何端口
-    if (ui->serialportcomboBox->count() == 0) {
-        ui->textEdit->append("未发现任何串口设备！");
-    }
-}
-
-void MainWindow::ontabwidgetindexchanged(int index) {
-    // 重置所有步骤的样式和图标
-    ui->STEP1->setStyleSheet("");
-    ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm.png"));
-    ui->STEP2->setStyleSheet("");
-    ui->STEP2->setIcon(QIcon(":/new/prefix1/icon/confirm.png"));
-    ui->STEP3->setStyleSheet("");
-    ui->STEP3->setIcon(QIcon(":/new/prefix1/icon/confirm.png"));
-    ui->STEP4->setStyleSheet("");
-    ui->STEP4->setIcon(QIcon(":/new/prefix1/icon/confirm.png"));
-    ui->STEP5->setStyleSheet("");
-    ui->STEP5->setIcon(QIcon(":/new/prefix1/icon/confirm.png"));
-
-    // 已完成步骤：深色背景 + 白色文字 + 绿色图标
-    for (int i = 0; i < index; ++i) {
-        switch(i) {
-        case 0:
-            ui->STEP1->setStyleSheet("background-color: #43425D; color:#FFFFFF;");
-            ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-            break;
-        case 1:
-            ui->STEP2->setStyleSheet("background-color: #43425D; color:#FFFFFF;");
-            ui->STEP2->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-            break;
-        case 2:
-            ui->STEP3->setStyleSheet("background-color: #43425D; color:#FFFFFF;");
-            ui->STEP3->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-            break;
-        case 3:
-            ui->STEP4->setStyleSheet("background-color: #43425D; color:#FFFFFF;");
-            ui->STEP4->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-            break;
-        }
-    }
-
-    // 当前步骤样式：灰色背景 + 黑色文字
-    switch(index) {
-    case 0:
-        ui->STEP1->setStyleSheet("background-color: #D3D3D3; color:#000000;");
-        // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/连接状态_改.png");
-        showImage(":/pic/image/Connection status.png");
-        break;
-    case 1:
-        ui->STEP2->setStyleSheet("background-color: #D3D3D3; color:#000000;");
-        // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/初始化姿态.png");
-        showImage(":/pic/image/Initial pose.png");
-        break;
-    case 2:
-        ui->STEP3->setStyleSheet("background-color: #D3D3D3; color:#000000;");
-        // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/标定姿态.png");
-        showImage(":/pic/image/Calibration pose.png");
-        break;
-    case 3:
-        ui->STEP4->setStyleSheet("background-color: #D3D3D3; color:#000000;");
-        // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/水平姿态.png");
-        showImage(":/pic/image/Level pose.png");
-        break;
-    case 4:
-        ui->STEP5->setStyleSheet("background-color: #D3D3D3; color:#000000;");
-        // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/初始化姿态.png");
-        showImage(":/pic/image/Initial pose.png");
-        break;
-    }
-}
-
-
-void MainWindow::showImage(const QString &imagePath)
-{
-    qDebug() << "尝试加载图片: " << imagePath;
-    QPixmap pixmap(imagePath);
-    if (pixmap.isNull()) {
-        ui->imageDisplayLabel->setText("图片加载失败: " + imagePath);
-        return;
-    }
-
-    ui->imageDisplayLabel->setPixmap(pixmap.scaled(ui->imageDisplayLabel->size(),
-                                                   Qt::KeepAspectRatio,
-                                                   Qt::SmoothTransformation));
-}
-
-void MainWindow::onEHAtestButtonClicked()
-{
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：请先连接串口！");
-        return;
-    }
-    ui->textEdit->append("开始EHA检测流程...");
-
-    // 清空之前的结果
-    m_testResults.clear();
-
-    // 定义测试力值序列（含0点基准），正反向共用同一组数值
-    //浮动模块测试
-    // const QVector<quint16> testForces = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
-    //滚压设备测试
-    const QVector<quint16> testForces = {0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
-
-    m_testForwardValues.fill(0, testForces.size());
-    m_testReverseValues.fill(0, testForces.size());
-
-    // 正向测试(从小到大)，实际力写入 m_testForwardValues（对应报告C8~C18）
-    ui->textEdit->append("\n正向测试:");
-    qreal maxDeviation = 0.0; // 用于存储最大偏差值
-    for (int i = 0; i < testForces.size(); ++i) {
-        quint16 force = testForces[i];
-        settleForce(force);
-        delayMS(2000);
-
-        if (!sensorforceValue) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
-            continue;
-        }
-
-        quint16 actualForce = qRound(sensorforceValue / 10.0);
-        m_testForwardValues[i] = actualForce;
-        qreal deviation = (qreal)actualForce - (qreal)force;
-        m_testResults.append({force, deviation});
-
-        // 更新最大偏差值
-        if (qAbs(deviation) > qAbs(maxDeviation)) {
-            maxDeviation = deviation;
-        }
-
-        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N, 偏差: %3N")
-                                 .arg(force).arg(actualForce).arg(deviation, 0, 'f', 1));
-    }
-
-    // 反向测试(从大到小)，实际力写入 m_testReverseValues（对应报告D18~D8）
-    ui->textEdit->append("\n反向测试:");
-    for (int i = testForces.size() - 1; i >= 0; --i) {
-        quint16 force = testForces[i];
-        settleForce(force);
-        delayMS(2000);
-
-        if (!sensorforceValue) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
-            continue;
-        }
-
-        quint16 actualForce = qRound(sensorforceValue / 10.0);
-        m_testReverseValues[i] = actualForce;
-        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N").arg(force).arg(actualForce));
-    }
-
-    ui->textEdit->append(QString("\n最大偏差: %1N").arg(maxDeviation, 0, 'f', 1));
-
-    // 绘制偏差曲线图，并传递最大偏差值
-    showDeviationChart(maxDeviation);
-
-    // 测试完成后力值归零
-    settleForce(0);
-}
-
-// 修改 showDeviationChart 函数，接收 maxDeviation 参数
-void MainWindow::showDeviationChart(qreal maxDeviation)
-{
-    // 创建图表
-    m_chart = new QChart();
-    m_chart->setTitle("<font size='5' color='#333333'>输出力偏差曲线</font>");
-    m_chart->setTitleBrush(QBrush(QColor("#333333")));
-    m_chart->setAnimationOptions(QChart::SeriesAnimations);
-    m_chart->setBackgroundBrush(QBrush(QColor("#f5f5f5")));
-    m_chart->setBackgroundRoundness(10);
-    m_chart->setMargins(QMargins(10, 15, 10, 10));
-
-    // 创建曲线系列
-    m_series = new QLineSeries();
-    m_series->setName("偏差值");
-    m_series->setColor(QColor("#3a7bd5"));  // 蓝色曲线
-    m_series->setPen(QPen(QBrush(QColor("#3a7bd5")), 3));
-
-    // 添加数据点
-    for (const auto &result : qAsConst(m_testResults)) {
-        m_series->append(result.first, result.second);
-    }
-
-    m_chart->addSeries(m_series);
-
-    // 创建坐标轴
-    QValueAxis *axisX = new QValueAxis();
-    axisX->setTitleText("<font color='#555555'>设定力</font>");
-    axisX->setTitleBrush(QBrush(QColor("#555555")));
-    axisX->setLabelFormat("%d");
-    axisX->setTickCount(11);
-    axisX->setGridLineColor(QColor("#dddddd"));
-    axisX->setLabelsColor(QColor("#555555"));
-    axisX->setLinePenColor(QColor("#aaaaaa"));
-
-    QValueAxis *axisY = new QValueAxis();
-    axisY->setTitleText("<font color='#555555'>偏差值</font>");
-    axisY->setTitleBrush(QBrush(QColor("#555555")));
-    axisY->setLabelFormat("%.1f");
-    axisY->setGridLineColor(QColor("#dddddd"));
-    axisY->setLabelsColor(QColor("#555555"));
-    axisY->setLinePenColor(QColor("#aaaaaa"));
-
-    // 设置纵坐标范围
-    qreal rangeLimit = qAbs(maxDeviation) + 10;
-    if (rangeLimit < 50) {
-        axisY->setRange(-rangeLimit, rangeLimit);
-    } else {
-        axisY->setRange(-rangeLimit, rangeLimit);
-    }
-
-    m_chart->addAxis(axisX, Qt::AlignBottom);
-    m_chart->addAxis(axisY, Qt::AlignLeft);
-    m_series->attachAxis(axisX);
-    m_series->attachAxis(axisY);
-
-    // 创建图表视图窗口
-    QDialog *chartDialog = new QDialog(this);
-    chartDialog->setWindowTitle("力值偏差分析");
-    chartDialog->resize(900, 500);  // 调整窗口高度（因为移除了表格）
-    chartDialog->setStyleSheet(
-        "QDialog {"
-        "   background: #f5f5f5;"
-        "   border: 1px solid #cccccc;"
-        "   border-radius: 8px;"
-        "}"
-        );
-
-    QVBoxLayout *layout = new QVBoxLayout(chartDialog);
-    layout->setContentsMargins(15, 15, 15, 15);
-    layout->setSpacing(15);
-
-    // 图表视图
-    m_chartView = new QChartView(m_chart);
-    m_chartView->setRenderHint(QPainter::Antialiasing);
-    m_chartView->setStyleSheet(
-        "background: white;"
-        "border: 1px solid #dddddd;"
-        "border-radius: 6px;"
-        );
-    layout->addWidget(m_chartView, 1);  // 曲线图占据主要空间
-
-    // 结果判断区域
-    QHBoxLayout *resultLayout = new QHBoxLayout();
-
-    // 偏差结果标签
-    QLabel *resultLabel = new QLabel();
-    resultLabel->setAlignment(Qt::AlignCenter);
-    resultLabel->setMinimumHeight(40);
-
-    QString resultMessage;
-    if (qAbs(maxDeviation) < 30) {
-        resultMessage = "<font size='5' color='#4CAF50'>✓ 测试通过 (最大偏差: %1)</font>";
-        resultLabel->setStyleSheet(
-            "background-color: #E8F5E9;"
-            "border: 1px solid #C8E6C9;"
-            "border-radius: 6px;"
-            "padding: 8px;"
-            );
-    } else {
-        resultMessage = "<font size='5' color='#F44336'>✗ 测试未通过 (最大偏差: %1)</font>";
-        resultLabel->setStyleSheet(
-            "background-color: #FFEBEE;"
-            "border: 1px solid #FFCDD2;"
-            "border-radius: 6px;"
-            "padding: 8px;"
-            );
-    }
-    resultLabel->setText(resultMessage.arg(QString::number(maxDeviation, 'f', 2)));
-    resultLayout->addWidget(resultLabel, 1);  // 结果标签占据大部分宽度
-
-    // 保存按钮
-    QPushButton *saveButton = new QPushButton("保存图表");
-    saveButton->setStyleSheet(
-        "QPushButton {"
-        "   background-color: #3a7bd5;"
-        "   color: white;"
-        "   border: none;"
-        "   border-radius: 4px;"
-        "   padding: 8px 16px;"
-        "   font-size: 14px;"
-        "}"
-        "QPushButton:hover {"
-        "   background-color: #2c5fb3;"
-        "}"
-        "QPushButton:pressed {"
-        "   background-color: #1e4a9a;"
-        "}"
-        );
-    saveButton->setCursor(Qt::PointingHandCursor);
-    resultLayout->addWidget(saveButton);  // 保存按钮靠右
-
-    // 输出标定报告按钮
-    QPushButton *exportReportButton = new QPushButton("输出标定报告");
-    exportReportButton->setStyleSheet(
-        "QPushButton {"
-        "   background-color: #4CAF50;"
-        "   color: white;"
-        "   border: none;"
-        "   border-radius: 4px;"
-        "   padding: 8px 16px;"
-        "   font-size: 14px;"
-        "}"
-        "QPushButton:hover {"
-        "   background-color: #388E3C;"
-        "}"
-        "QPushButton:pressed {"
-        "   background-color: #2E7D32;"
-        "}"
-        );
-    exportReportButton->setCursor(Qt::PointingHandCursor);
-    resultLayout->addWidget(exportReportButton);
-
-    layout->addLayout(resultLayout);  // 添加结果区域到底部
-
-    // 保存按钮连接
-    connect(saveButton, &QPushButton::clicked, this, [this]() {
-        QString fileName = QFileDialog::getSaveFileName(
-            this,
-            "保存图表",
-            QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
-            "PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg)"
-            );
-        if (!fileName.isEmpty()) {
-            QPixmap p = m_chartView->grab();
-            if (p.save(fileName)) {
-                ui->textEdit->append(QString("图表已保存到: %1").arg(fileName));
-            } else {
-                ui->textEdit->append("保存失败，请检查路径和权限");
-            }
-        }
-    });
-
-    // 输出标定报告按钮连接
-    connect(exportReportButton, &QPushButton::clicked, this, [this]() {
-        bool ok = false;
-        QString deviceId = QInputDialog::getText(
-            this,
-            "设备编号",
-            "请输入本设备编号(如 D00025):",
-            QLineEdit::Normal,
-            "",
-            &ok
-            );
-        if (!ok) {
+    if (m_parameterModel->dirtyCount() > 0) {
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("退出程序"),
+            QStringLiteral("仍有 %1 个参数修改尚未写入设备，确定退出吗？")
+                .arg(m_parameterModel->dirtyCount()));
+        if (answer != QMessageBox::Yes) {
+            event->ignore();
             return;
         }
+    }
+    m_serial->close();
+    QMainWindow::closeEvent(event);
+}
 
-        if (!readCalibParamsFromDevice()) {
-            return;
+void MainWindow::openSerial(const QString &portName, int baudRate, int dataBits,
+                            int parity, int stopBits)
+{
+    DeviceSerialService::Options options;
+    options.portName = portName;
+    options.baudRate = baudRate;
+    options.dataBits = dataBits;
+    options.parity = parity;
+    options.stopBits = stopBits;
+    if (m_serial->open(options)) {
+        statusBar()->showMessage(
+            QStringLiteral("串口 %1 已连接，115200 8N1 心跳通信已启动").arg(portName),
+            5000);
+    }
+}
+
+void MainWindow::closeSerial()
+{
+    m_serial->close();
+    statusBar()->showMessage(QStringLiteral("串口连接已断开"), 3000);
+}
+
+void MainWindow::setConnectionState(bool connected, const QString &portName)
+{
+    m_connected = connected;
+    m_communicationPage->setConnected(connected, portName);
+    m_dashboard->setConnectionState(connected, portName);
+    m_driveInfoPage->setConnected(connected, portName);
+    m_parameterPage->setConnected(connected);
+    m_monitorPage->setConnected(connected);
+
+    m_topConnectionLabel->setText(connected
+                                      ? QStringLiteral("●  %1").arg(portName)
+                                      : QStringLiteral("●  未连接"));
+    m_topConnectionLabel->setProperty("state",
+                                      connected ? QStringLiteral("online")
+                                                : QStringLiteral("offline"));
+    m_topConnectionLabel->style()->unpolish(m_topConnectionLabel);
+    m_topConnectionLabel->style()->polish(m_topConnectionLabel);
+    if (!connected) {
+        m_topEnableLabel->setText(QStringLiteral("DISABLED"));
+        m_topEnableLabel->setProperty("state", QStringLiteral("warning"));
+        m_topFaultLabel->setText(QStringLiteral("NO FLT"));
+        m_topFaultLabel->setProperty("state", QStringLiteral("offline"));
+        m_topModeLabel->setText(QStringLiteral("驱动模式 · OFFLINE"));
+        for (QLabel *label : {m_livePosition, m_liveMultiTurn, m_liveSingleTurn,
+                              m_liveSpeed, m_liveCurrent, m_liveVoltage, m_liveForce}) {
+            label->setText(QStringLiteral("--"));
         }
-        QString fileName = QFileDialog::getSaveFileName(
-            this,
-            "保存标定报告",
-            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/标定报告.xlsx",
-            "Excel 工作簿 (*.xlsx)"
-            );
-        if (!fileName.isEmpty()) {
-            exportCalibrationReport(fileName, deviceId);
-        }
-    });
-
-    chartDialog->exec();
-}
-
-bool MainWindow::readCalibParamsFromDevice()
-{
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：串口未连接，无法读取PN参数！");
-        return false;
-    }
-
-    m_calibForwardValues.fill(0, 10);  // PN140~PN149
-    m_calibReverseValues.fill(0, 10);  // PN180~PN189
-    m_pn170Value = 0;                  // PN170
-    m_serialRxBuffer.clear();
-    m_waitingForCalibParams = true;
-    m_heartbeatTimer->stop();  // 读取参数期间停止心跳，避免干扰设备推送
-
-    const quint8 readAllCmd[] = { 0x55, 0x55, 0xFE, 0xFE, 0xEF, 0xEF, 0xAA, 0xAA };
-    serial->write(reinterpret_cast<const char*>(readAllCmd), sizeof(readAllCmd));
-    ui->textEdit->append("正在读取设备 PN140~149 / PN180~189 / PN170 参数，请稍候...");
-
-    QEventLoop loop;
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(this, &MainWindow::calibParamsReadFinished, &loop, &QEventLoop::quit);
-    timeoutTimer.start(5000);  // 5秒超时
-    loop.exec();
-
-    m_heartbeatTimer->start(100);
-
-    if (m_waitingForCalibParams) {
-        m_waitingForCalibParams = false;
-        ui->textEdit->append("错误：读取PN140~149/PN180~189参数超时，请检查设备连接！");
-        return false;
-    }
-    ui->textEdit->append("PN140~149 / PN180~189 参数读取完毕");
-    return true;
-}
-
-void MainWindow::exportCalibrationReport(const QString &savePath, const QString &deviceId)
-{
-    if (m_testForwardValues.size() < 11 || m_testReverseValues.size() < 11) {
-        ui->textEdit->append("错误：EHA检测数据不完整，请先完成一次EHA检测！");
-        return;
-    }
-    if (m_calibForwardValues.size() < 10 || m_calibReverseValues.size() < 10) {
-        ui->textEdit->append("错误：PN参数读取不完整！");
-        return;
-    }
-
-    const QString templatePath = QCoreApplication::applicationDirPath() + "/ECM1B2000标定报告.xlsx";
-    if (!QFile::exists(templatePath)) {
-        ui->textEdit->append("错误：未找到标定报告模板：" + templatePath);
-        return;
-    }
-
-    QAxObject excel("Excel.Application");
-    if (excel.isNull()) {
-        ui->textEdit->append("错误：无法启动 Excel，请确认本机已安装 Microsoft Excel！");
-        return;
-    }
-    excel.setProperty("Visible", false);
-    excel.setProperty("DisplayAlerts", false);
-
-    QAxObject *workbooks = excel.querySubObject("Workbooks");
-    QAxObject *workbook = workbooks->querySubObject("Open(const QString&)", QDir::toNativeSeparators(templatePath));
-    if (!workbook) {
-        ui->textEdit->append("错误：无法打开标定报告模板！");
-        excel.dynamicCall("Quit()");
-        return;
-    }
-
-    QAxObject *sheets = workbook->querySubObject("Worksheets");
-    QAxObject *sheet = sheets->querySubObject("Item(int)", 1); // 第一张表"耐久测试"
-
-    // 设备编号 → B2(与F2合并)
-    QAxObject *deviceCell = sheet->querySubObject("Cells(int,int)", 2, 2);
-    deviceCell->setProperty("Value", deviceId);
-    delete deviceCell;
-
-    // PN170 → E6
-    QAxObject *pn170Cell = sheet->querySubObject("Cells(int,int)", 6, 5);
-    pn170Cell->setProperty("Value", m_pn170Value);
-    delete pn170Cell;
-
-    // 正向实际力 → C8~C18
-    for (int i = 0; i < m_testForwardValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 3);
-        cell->setProperty("Value", m_testForwardValues[i]);
-        delete cell;
-    }
-
-    // 反向实际力 → D8~D18（同一行对应同一设定力档位）
-    for (int i = 0; i < m_testReverseValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 4);
-        cell->setProperty("Value", m_testReverseValues[i]);
-        delete cell;
-    }
-
-    // PN140~PN149 → H8~H17
-    for (int i = 0; i < m_calibForwardValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 8);
-        cell->setProperty("Value", m_calibForwardValues[i]);
-        delete cell;
-    }
-
-    // PN180~PN189 → J8~J17
-    for (int i = 0; i < m_calibReverseValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 10);
-        cell->setProperty("Value", m_calibReverseValues[i]);
-        delete cell;
-    }
-
-    workbook->dynamicCall("SaveAs(const QString&)", QDir::toNativeSeparators(savePath));
-    workbook->dynamicCall("Close()");
-    excel.dynamicCall("Quit()");
-
-    delete sheet;
-    delete sheets;
-    delete workbook;
-    delete workbooks;
-
-    ui->textEdit->append("标定报告已保存至：" + savePath);
-}
-
-void MainWindow::onehaconnectButtonClicked()
-{
-    if (serial->isOpen()) {
-        m_heartbeatTimer->stop();
-        serial->close();
-        ui->EHAconnect->setText("连接");
-        ui->textEdit->append("已断开串口连接");
-        ui->EHAreset->setEnabled(false);
-        ui->EHAcalibration->setEnabled(false);
-        return;
-    }
-    QString ipAddress = ui->IPaddress->text().trimmed();  // 去除前后空格
-
-
-    // 验证IP地址格式（简单校验）
-    QRegularExpression ipRegex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$");
-    if (!ipRegex.match(ipAddress).hasMatch()) {
-        ui->textEdit->append("错误：IP地址格式无效！");
-        return;
-    }
-
-    // 固定端口号为502，连接TCP Socket
-    tcpSocket->connectToHost(ipAddress, 502);  // 端口固定为502
-
-    // tcpSocket->connectToHost("192.168.1.12", 502);
-    // tcpSocket->connectToHost("127.0.0.1", 502);
-    m_readTimer->start(1000);
-    if(tcpSocket->waitForConnected(1000)) {  // 等待1秒连接
-        ui->textEdit->append("力传感器连接成功");
-    } else {
-        ui->textEdit->append("力传感器连接失败: " + tcpSocket->errorString());
-    }
-
-
-
-    ui->EHAreset->setEnabled(true);   // 测试用 之后删掉
-    ui->EHAcalibration->setEnabled(true); //测试用 之后删掉
-    ui->EHAzero->setEnabled(false);
-
-
-    // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/初始化姿态.png");
-    showImage(":/pic/image/Initial pose.png");
-    QString portName = ui->serialportcomboBox->currentText().split(" ").first();
-    serial->setPortName(portName);
-
-    // 设置串口参数
-    serial->setBaudRate(QSerialPort::Baud115200);
-    serial->setDataBits(QSerialPort::Data8);
-    serial->setParity(QSerialPort::NoParity);
-    serial->setStopBits(QSerialPort::OneStop);
-    serial->setFlowControl(QSerialPort::NoFlowControl);
-
-    if (serial->open(QIODevice::ReadWrite)) {
-        qDebug() << "[连接] 串口已打开：" << portName;
-
-        // 协议规定：连接后先发握手包，设备才开始通信
-        const quint8 handshake[] = { 0x55, 0x55, 0xB9, 0x9B, 0x9B, 0xB9, 0xAA, 0xAA };
-        m_serialRxBuffer.clear();
-        m_captureOnce = true;
-        serial->write(reinterpret_cast<const char*>(handshake), sizeof(handshake));
-        serial->flush();
-        // qDebug() << "[连接] 已发送握手包";
-        // QTimer::singleShot(1000, this, [this]() {
-        //     m_captureOnce = false;
-        //     qDebug() << "[握手响应结束] 缓冲区共" << m_serialRxBuffer.size() << "字节:" << m_serialRxBuffer.toHex(' ');
-        // });
-
-        delayMS(50);                // 等设备就绪
-        sendData(2, 79);            // Pn002=66：参数监视=转矩反馈
-        m_heartbeatTimer->start(100);
-        qDebug() << "[连接] 已发送 Pn002=79，心跳已启动";
-
-        ui->EHAconnect->setText("断开");
-        ui->textEdit->append(QString("已连接到 %1，请根据需求选择下列功能").arg(portName));
-        ui->textEdit->append("EHA标定，点击《EHA初始化》按钮，初始化需要设备姿态调整为竖直 不与标定工具接触");
-        ui->textEdit->append("EHA检测，点击《EHA检测》按钮，检测需要设备姿态调整为竖直，接触标定工具，下压量保持在滚压设备零点附近");
-        ui->EHAreset->setEnabled(true);  // 连接成功后启用 reset 按钮
-        //EHA连接正常 步骤栏变色 跳到下一步
-        applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
-        ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-        ui->STEP1->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
-
-        ui->STEP2->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-
-        // ui->EHAtest->setEnabled(true);
-    } else {
-        ui->textEdit->append("错误：无法打开串口！");
-        // ui->textEdit->append(QString("错误详情: %1").arg(serial->errorString()));
-    }
-    ui->EHAreset->setEnabled(true);  // 连接成功后启用 reset 按钮
-
-}
-
-void MainWindow::oneharesetButtonClicked()
-{
-    //pn168=150，pn169=0；pn046=150，pn047=0；pn052=150，pn053=0
-    ui->textEdit->append("步骤二:EHA初始化。。。");
-    sendData(0,9999);
-    sendData(169, 0);
-    sendData(172, 3);
-    ui->textEdit->append("内参初始化完毕");
-    //质量清零
-    sendData(48, 0);
-    sendData(170, 0);
-    ui->textEdit->append("质量初始化完毕");
-    //pn102清零
-    sendData(44, 200);
-    MainWindow::delayMS(2000);
-    sendData(102, 1);
-    sendData(102, 0);
-    sendData(44, 0);
-    sendData(152, 0);// 切换到标定模式
-    sendData(2,81); //数显屏设置为显示位移量
-    ui->textEdit->append("设定力初始化完毕\n标定时设备需接触力传感器，并下压至数显屏数值在0(位移零点)左右");
-
-    ui->EHAcalibration->setEnabled(true);
-    ui->textEdit->append("初始化完成，机器人下压到位后点击《EHA标定》按钮开始标定");
-}
-void MainWindow::onehacalibrationButtonClicked()
-{
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：请先连接串口！");
-        return;
-    }
-    settleForce(0);
-    ui->textEdit->clear();
-    ui->textEdit->append("步骤三:启动十段力标定流程（机器人已下压到位）...");
-
-    // 十档设定力值：1000 ~ 9999
-    const QVector<quint16> forces = {1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 9999};
-
-    // 正向：1000 → 9999，依次写入 PN140 ~ PN149
-    ui->textEdit->append("\n[正向标定] 1000 → 9999，写入 PN140~PN149:");
-    for (int i = 0; i < forces.size(); ++i) {
-        settleForce(forces[i]);
-        MainWindow::delayMS(2000);
-        quint16 pn = 140 + i;
-        quint16 forceRounded = qRound(sensorforceValue / 10.0);
-        sendData(pn, forceRounded);
-        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
-                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
-    }
-
-    // 反向：9999 → 1000，依次写入 PN189 ~ PN180
-    ui->textEdit->append("\n[反向标定] 9999 → 1000，写入 PN189~PN180:");
-    for (int i = forces.size() - 1; i >= 0; --i) {
-        settleForce(forces[i]);
-        MainWindow::delayMS(2000);
-        quint16 pn = 180 + i;
-        quint16 forceRounded = qRound(sensorforceValue / 10.0);
-        sendData(pn, forceRounded);
-        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
-                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
-    }
-
-    settleForce(0);
-    sendData(152, 1);
-    sendData(2, 79);
-    ui->textEdit->append("\n十段力标定写入完毕，标定完成");
-    ui->textEdit->append("步骤四：操作机器人，滚压设备调整为水平姿态（数显屏数值为0），执行力矩清零");
-    ui->EHAzero->setEnabled(false);
-}
-
-void MainWindow::sendData(quint16 pn, quint16 value)
-{
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：串口未连接！");
-        return;
-    }
-
-    // 构造数据：55 55 PnH PnL ValueH ValueL AA AA
-    QByteArray data;
-    data.append(0x55);  // 起始字节1
-    data.append(0x55);  // 起始字节2
-
-    // Pn参数 (高位在前)
-    data.append(static_cast<char>((pn >> 8) & 0xFF));  // Pn高字节
-    data.append(static_cast<char>(pn & 0xFF));         // Pn低字节
-
-    // 值 (高位在前)
-    data.append(static_cast<char>((value >> 8) & 0xFF));  // 值高字节
-    data.append(static_cast<char>(value & 0xFF));         // 值低字节
-
-    data.append(0xAA);  // 结束字节1
-    data.append(0xAA);  // 结束字节2
-
-    // 发送数据
-    qint64 bytesWritten = serial->write(data);
-    if (bytesWritten == -1) {
-        ui->textEdit->append("发送数据失败！");
-    } else if (bytesWritten != data.size()) {
-        ui->textEdit->append("发送数据不完整！");
-    } else {
-        // ui->textEdit->append(QString("已发送数据: %1").arg(QString(data.toHex(' '))));
-    }
-
-    if (bytesWritten == data.size()) {
-        // 纯延时 100ms（非阻塞）
-        MainWindow::delayMS(200); // 等待 200ms，期间不阻塞事件循环
-    }
-}
-
-void MainWindow::settleForce(quint16 forceValue)
-{
-    // Pn044
-    const quint16 pn = 0x002C;
-
-    sendData(pn, forceValue);
-
-    ui->textEdit->append(QString("设置值: %1")
-                             .arg(forceValue));
-}
-
-void MainWindow::onEHAzeroButtonClicked()
-{
-    // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/水平姿态.png");
-    showImage(":/pic/image/Level pose.png");
-    // 1. 力值归零初始化
-    settleForce(0);
-    ui->textEdit->append("步骤四:力矩清零...");
-    settleForce(200);
-    MainWindow::delayMS(2000);
-    sendData(102, 1);
-    sendData(102, 0);
-    ui->textEdit->append("步骤四:力矩清零完成 调整滚压设备为竖直状态 观察数显屏数值");
-    ui->textEdit->append("步骤五:数显屏为实时力数值 通过填写质量补偿数值 将数显屏数值补偿到0");
-    ui->EHAmassconfirm->setEnabled(true);
-    sendData(2, 79);
-    MainWindow::delayMS(2000);
-    settleForce(0);
-
-}
-
-void MainWindow::onEHAmassconfirmButtonClicked()
-{
-    int EHAmass = ui->EHAmass->text().toInt();
-    sendData(160,0);
-    sendData(170,EHAmass);
-    ui->textEdit->append("步骤五:质量补偿已录入 观察数显屏数值 显示值为0则标定完毕\n(注:质量补偿可多次录入调试)");
-}
-
-void MainWindow::delayMS(int ms)
-{
-    QEventLoop loop;
-    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
-    loop.exec();
-}
-
-
-void MainWindow::readModbusData()
-{
-    if (tcpSocket->state() != QTcpSocket::ConnectedState) return;
-
-    static quint16 transactionId = 0;
-    transactionId++;
-
-    QByteArray request;
-    QDataStream stream(&request, QIODevice::WriteOnly);
-    stream.setByteOrder(QDataStream::BigEndian);
-
-    // Modbus TCP请求报文
-    stream << transactionId << (quint16)0x0000 << (quint16)0x0006;
-    stream << (quint8)0x01 << (quint8)0x03 << (quint16)1542 << (quint16)2;
-
-    tcpSocket->write(request);
-}
-
-void MainWindow::onSocketReadyRead()
-{
-    QByteArray data = tcpSocket->readAll();
-    // ui->textEdit->append(QString("[TCP RX] %1").arg(QString(data.toHex(' '))));
-    parseModbusResponse(data);
-}
-
-void MainWindow::parseModbusResponse(const QByteArray &data)
-{
-    if (data.length() < 9) return;
-
-    QDataStream stream(data);
-    stream.setByteOrder(QDataStream::BigEndian);
-
-    quint16 transactionId, protocolId, length;
-    quint8 unitId, functionCode;
-    stream >> transactionId >> protocolId >> length >> unitId >> functionCode;
-
-    if (protocolId != 0x0000 || unitId != 0x01 || length != 0x0007) return;
-
-    if (functionCode == 0x03 || functionCode == 0x04) {
-        quint8 byteCount;
-        stream >> byteCount;
-
-        // 确保有足够的数据
-        if (data.length() >= 11) {  // 9字节头部 + 1字节byteCount + 至少2字节数据
-            // 获取最后两个字节
-            quint8 lastByte = data[data.length()-1];
-            quint8 secondLastByte = data[data.length()-2];
-            // sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
-            sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
+        for (QLabel *label : {m_topEnableLabel, m_topFaultLabel}) {
+            label->style()->unpolish(label);
+            label->style()->polish(label);
         }
     }
 }
 
-void MainWindow::on_NextStep1_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
-    // ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-    // ui->STEP1->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
-    // ui->STEP2->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-}
-
-void MainWindow::on_NextStep2_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
-    // ui->STEP2->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-    // ui->STEP2->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
-    // ui->STEP3->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-}
-
-void MainWindow::on_ForwardStep1_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 0);
-}
-
-void MainWindow::on_NextStep3_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
-    // ui->STEP3->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-    // ui->STEP3->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
-    // ui->STEP4->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-}
-
-void MainWindow::on_ForwardStep2_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
-}
-
-void MainWindow::on_NextStep4_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 4);
-    // ui->STEP4->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
-    // ui->STEP4->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
-    // ui->STEP5->setStyleSheet("background-color: #D3D3D3;color:#000000;");
-}
-
-void MainWindow::on_ForwardStep3_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
-}
-
-void MainWindow::on_ForwardStep4_clicked(bool checked) {
-    applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
-}
-
-void MainWindow::onSerialReadyRead()
+void MainWindow::handleTelemetry(const DeviceSerialService::Telemetry &telemetry)
 {
-    QByteArray newBytes = serial->readAll();
-
-    // if (m_captureOnce && !newBytes.isEmpty()) {
-    //     qDebug() << "[握手响应帧]" << newBytes.size() << "字节:" << newBytes.toHex(' ');
-    // }
-
-    static qint64 lastRxPrint = 0;
-    qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (now - lastRxPrint >= 1000) {
-        // ui->textEdit->append(QString("[串口 RX] %1").arg(QString(newBytes.toHex(' '))));
-        lastRxPrint = now;
+    m_dashboard->updateTelemetry(telemetry);
+    m_monitorPage->updateTelemetry(telemetry);
+    m_driveInfoPage->updateTelemetry(telemetry);
+    m_livePosition->setText(QString::number(telemetry.position, 'f', 0));
+    m_liveMultiTurn->setText(QString::number(telemetry.multiTurnPosition, 'f', 0));
+    m_liveSingleTurn->setText(QString::number(telemetry.singleTurnPosition, 'f', 0));
+    m_liveSpeed->setText(QString::number(telemetry.speed, 'f', 1));
+    m_liveCurrent->setText(QString::number(telemetry.current, 'f', 2));
+    m_liveVoltage->setText(QString::number(telemetry.busVoltage, 'f', 2));
+    m_liveForce->setText(QString::number(telemetry.force, 'f', 0));
+    if (telemetry.statusKnown) {
+        m_dashboard->setMotorEnabled(telemetry.motorEnabled);
+        m_topEnableLabel->setText(telemetry.motorEnabled
+                                      ? QStringLiteral("ENABLED")
+                                      : QStringLiteral("DISABLED"));
+        m_topEnableLabel->setProperty("state",
+                                      telemetry.motorEnabled
+                                          ? QStringLiteral("online")
+                                          : QStringLiteral("warning"));
+        m_topEnableLabel->style()->unpolish(m_topEnableLabel);
+        m_topEnableLabel->style()->polish(m_topEnableLabel);
     }
-    m_serialRxBuffer.append(newBytes);
+    if (telemetry.faultCode != 0) {
+        m_dashboard->setFaultCode(telemetry.faultCode);
+        m_topFaultLabel->setText(
+            QStringLiteral("FLT %1").arg(telemetry.faultCode));
+        m_topFaultLabel->setProperty("state", QStringLiteral("error"));
+    } else {
+        m_topFaultLabel->setText(QStringLiteral("NO FLT"));
+        m_topFaultLabel->setProperty("state", QStringLiteral("online"));
+    }
+    m_topFaultLabel->style()->unpolish(m_topFaultLabel);
+    m_topFaultLabel->style()->polish(m_topFaultLabel);
+    m_topModeLabel->setText(telemetry.motorEnabled
+                                ? QStringLiteral("驱动模式 · RUN")
+                                : QStringLiteral("驱动模式 · SAFE"));
+}
 
-    // 异步等待 PN140~149 / PN180~189：只扫描新增区域（含跨包边界的6字节重叠）
-    if (m_waitingForCalibParams) {
-        int scanFrom = qMax(0, m_serialRxBuffer.size() - newBytes.size() - 6);
-        for (int i = scanFrom; i <= m_serialRxBuffer.size() - 7; ++i) {
-            if ((quint8)m_serialRxBuffer[i]   == 0xEF &&
-                (quint8)m_serialRxBuffer[i+1] == 0xAD &&
-                (quint8)m_serialRxBuffer[i+2] == 0xAA) {
-                quint16 pn  = ((quint8)m_serialRxBuffer[i+3] << 8) | (quint8)m_serialRxBuffer[i+4];
-                quint16 val = ((quint8)m_serialRxBuffer[i+5] << 8) | (quint8)m_serialRxBuffer[i+6];
-                if (pn >= 140 && pn <= 149) {
-                    m_calibForwardValues[pn - 140] = val;
-                } else if (pn >= 180 && pn <= 189) {
-                    m_calibReverseValues[pn - 180] = val;
-                } else if (pn == 170) {
-                    m_pn170Value = val;
-                }
-                if (pn == 0x00C7) {  // PN199，最后一个参数
-                    m_waitingForCalibParams = false;
-                    emit calibParamsReadFinished();
-                    break;
-                }
+void MainWindow::readAllParameters()
+{
+    if (!confirmReadWhileDirty()) {
+        return;
+    }
+    if (m_serial->readAllParameters()) {
+        statusBar()->showMessage(QStringLiteral("正在读取设备 Pn000–Pn199…"));
+    }
+}
+
+void MainWindow::writeDirtyParameters()
+{
+    const QMap<quint16, quint16> values = m_parameterModel->dirtyValues();
+    if (!confirmWrite(values)) {
+        return;
+    }
+
+    int count = 0;
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        if (m_serial->writeParameter(it.key(), it.value())) {
+            m_parameterModel->markWritten(it.key());
+            ++count;
+        }
+    }
+    statusBar()->showMessage(
+        QStringLiteral("已将 %1 个参数加入发送队列").arg(count), 5000);
+}
+
+void MainWindow::writeAndSaveParameters()
+{
+    const QMap<quint16, quint16> values = m_parameterModel->dirtyValues();
+    if (!confirmWrite(values)) {
+        return;
+    }
+
+    int count = 0;
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        if (m_serial->writeParameter(it.key(), it.value())) {
+            m_parameterModel->markWritten(it.key());
+            ++count;
+        }
+    }
+    requestParameterSave();
+    statusBar()->showMessage(
+        QStringLiteral("已提交 %1 个参数，并发送 Pn152 保存命令").arg(count), 6000);
+}
+
+void MainWindow::requestParameterSave()
+{
+    if (!m_connected) {
+        QMessageBox::information(this, QStringLiteral("保存参数"),
+                                 QStringLiteral("请先连接设备"));
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("写入 EEPROM"),
+            QStringLiteral("将当前设备参数保存到 EEPROM（Pn152 = 1），是否继续？"))
+        != QMessageBox::Yes) {
+        return;
+    }
+    if (m_serial->requestParameterSave()) {
+        m_parameterModel->markWritten(152);
+        statusBar()->showMessage(QStringLiteral("Pn152 保存命令已发送"), 5000);
+    }
+}
+
+void MainWindow::showParametersForGroup(const QString &group)
+{
+    m_parameterPage->selectGroup(group);
+    showPage(1);
+    setCurrentPageTitle(group == QStringLiteral("全部参数")
+                            ? QStringLiteral("Pn 参数工作台")
+                            : QStringLiteral("%1参数").arg(group));
+}
+
+void MainWindow::showPage(int index)
+{
+    if (index < 0 || index >= m_stack->count()) {
+        return;
+    }
+    m_stack->setCurrentIndex(index);
+    static const QStringList titles {
+        QStringLiteral("实时设备概览"),
+        QStringLiteral("Pn 参数工作台"),
+        QStringLiteral("实时示波器"),
+        QStringLiteral("串口通信中心"),
+        QStringLiteral("驱动器信息"),
+    };
+    if (index < titles.size()) {
+        setCurrentPageTitle(titles.at(index));
+        for (QAbstractButton *button : m_navGroup->buttons()) {
+            if (button->property("pageIndex").toInt() == index
+                && button->property("group").toString().isEmpty()) {
+                button->setChecked(true);
+                break;
             }
         }
     }
+}
 
-    for (int i = 0; i <= m_serialRxBuffer.size() - 8; ++i) {
-        if ((quint8)m_serialRxBuffer[i]   != 0xEF ||
-            (quint8)m_serialRxBuffer[i+1] != 0xAD ||
-            (quint8)m_serialRxBuffer[i+2] != 0xAB)
-            continue;
+void MainWindow::handleParameterReadFinished(bool complete, int received)
+{
+    m_parameterPage->setReadFinished(complete, received);
+    m_dashboard->setParameterReadFinished(complete, received);
+    statusBar()->showMessage(
+        complete
+            ? QStringLiteral("参数读取完成，共 %1 项").arg(received)
+            : QStringLiteral("参数读取未完整结束，收到 %1 项；请检查串口连接").arg(received),
+        complete ? 5000 : 8000);
+}
 
-        quint8 type = (quint8)m_serialRxBuffer[i+3];
-        quint8 b4   = (quint8)m_serialRxBuffer[i+4];
-        quint8 b5   = (quint8)m_serialRxBuffer[i+5];
-        quint8 b6   = (quint8)m_serialRxBuffer[i+6];
-        quint8 b7   = (quint8)m_serialRxBuffer[i+7];
-        quint32 rawU = ((quint32)b4 << 24) | ((quint32)b5 << 16) | ((quint32)b6 << 8) | b7;
-        qint32  rawS = (qint32)rawU;
+void MainWindow::handleSerialError(const QString &message)
+{
+    statusBar()->showMessage(message, 8000);
+    m_communicationPage->logMessage(message);
+}
 
-        switch (type) {
-        case 0x07:
-            ui->EHAforceR->setText(QString("%1").arg(rawU));
-            // ui->textEdit->append(QString("[参数监视] uint32=%1  int32=%2").arg(rawU).arg(rawS));
-            break;
-        case 0x1A:
-            // qDebug() << QString("[母线电压] uint32=%1").arg(rawU);
-            break;
-        case 0x08:
-            // qDebug() << QString("[电流]     int32=%1").arg(rawS);
-            break;
-        case 0x09:
-            // qDebug() << QString("[速度]     int32=%1").arg(rawS);
-            break;
-        case 0x0B:
-            // qDebug() << QString("[单圈位置] uint32=%1").arg(rawU);
-            break;
-        case 0x0A:
-            // qDebug() << QString("[多圈位置] uint32=%1").arg(rawU);
-            break;
-        case 0x0C:
-            // qDebug() << QString("[位置]     int32=%1").arg(rawS);
-            break;
-        default:
+void MainWindow::showCommunicationPage()
+{
+    showPage(3);
+    for (QAbstractButton *button : m_navGroup->buttons()) {
+        if (button->property("pageIndex").toInt() == 3) {
+            button->setChecked(true);
             break;
         }
     }
-
-    if (m_serialRxBuffer.size() > 4096)
-        m_serialRxBuffer.remove(0, m_serialRxBuffer.size() - 2048);
 }
 
+bool MainWindow::confirmReadWhileDirty()
+{
+    if (m_parameterModel->dirtyCount() == 0) {
+        return true;
+    }
+    return QMessageBox::question(
+               this, QStringLiteral("读取全部参数"),
+               QStringLiteral("读取会覆盖 %1 个尚未写入的参数修改，是否继续？")
+                   .arg(m_parameterModel->dirtyCount()))
+        == QMessageBox::Yes;
+}
 
-// 通用的淡入淡出动画函数
-void MainWindow::applyFadeAnimation(QTabWidget* tabWidget, int fromIndex, int toIndex) {
-    // 如果已经在目标页面或动画正在进行，则直接返回
-    if (fromIndex == toIndex || m_fadeAnimationActive) {
-        return;
+bool MainWindow::confirmWrite(const QMap<quint16, quint16> &values)
+{
+    if (!m_connected) {
+        QMessageBox::information(this, QStringLiteral("写入参数"),
+                                 QStringLiteral("请先连接设备"));
+        return false;
+    }
+    if (values.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("写入参数"),
+                                 QStringLiteral("当前没有待写入的参数修改"));
+        return false;
     }
 
-    m_fadeAnimationActive = true;
-
-    // 当前页淡出
-    QGraphicsOpacityEffect* fadeOut = new QGraphicsOpacityEffect(tabWidget->widget(fromIndex));
-    tabWidget->widget(fromIndex)->setGraphicsEffect(fadeOut);
-    QPropertyAnimation* animOut = new QPropertyAnimation(fadeOut, "opacity");
-    animOut->setDuration(200);
-    animOut->setStartValue(1.0);
-    animOut->setEndValue(0.0);
-
-    // 切换后新页淡入
-    connect(animOut, &QPropertyAnimation::finished, [this, tabWidget, toIndex, fadeOut]() {
-        tabWidget->setCurrentIndex(toIndex);
-
-        QGraphicsOpacityEffect* fadeIn = new QGraphicsOpacityEffect(tabWidget->widget(toIndex));
-        tabWidget->widget(toIndex)->setGraphicsEffect(fadeIn);
-        QPropertyAnimation* animIn = new QPropertyAnimation(fadeIn, "opacity");
-        animIn->setDuration(200);
-        animIn->setStartValue(0.0);
-        animIn->setEndValue(1.0);
-
-        connect(animIn, &QPropertyAnimation::finished, [this, fadeOut, fadeIn]() {
-            // 清理效果对象
-            if (fadeOut) fadeOut->deleteLater();
-            if (fadeIn) fadeIn->deleteLater();
-            m_fadeAnimationActive = false;
-        });
-
-        animIn->start(QAbstractAnimation::DeleteWhenStopped);
-    });
-
-    animOut->start(QAbstractAnimation::DeleteWhenStopped);
-}
-
-void MainWindow::sendHeartbeat()
-{
-    if (!serial->isOpen()) return;
-    const quint8 hb[] = { 0x55, 0x55, 0xB6, 0xB6, 0x7B, 0x7B, 0xAA, 0xAA };
-    serial->write(reinterpret_cast<const char*>(hb), sizeof(hb));
-}
-
-void MainWindow::onSwitchEthercatButtonClicked()
-
-{
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：请先连接串口！");
-        return;
+    QStringList preview;
+    int shown = 0;
+    for (auto it = values.constBegin(); it != values.constEnd() && shown < 8; ++it, ++shown) {
+        preview.append(QStringLiteral("Pn%1 = %2")
+                           .arg(it.key(), 3, 10, QLatin1Char('0'))
+                           .arg(it.value()));
     }
-    sendData(160, 1);
-    ui->textEdit->append("已切换为 EtherCAT 控制模式 (PN160 ← 1)");
+    if (values.size() > shown) {
+        preview.append(QStringLiteral("…以及另外 %1 项").arg(values.size() - shown));
+    }
+
+    return QMessageBox::question(
+               this, QStringLiteral("确认写入设备"),
+               QStringLiteral("将写入 %1 个参数：\n\n%2\n\n参数写入可能立即影响设备动作，请确认现场安全。")
+                   .arg(values.size())
+                   .arg(preview.join(QLatin1Char('\n'))))
+        == QMessageBox::Yes;
+}
+
+void MainWindow::createInterface()
+{
+    auto *shell = new QWidget(this);
+    shell->setObjectName(QStringLiteral("appShell"));
+    auto *shellLayout = new QHBoxLayout(shell);
+    shellLayout->setContentsMargins(0, 0, 0, 0);
+    shellLayout->setSpacing(0);
+    setCentralWidget(shell);
+
+    auto *sidebar = new QWidget(shell);
+    sidebar->setObjectName(QStringLiteral("sidebar"));
+    sidebar->setFixedWidth(232);
+    auto *sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->setContentsMargins(18, 22, 18, 18);
+    sidebarLayout->setSpacing(10);
+
+    auto *brand = new QLabel(QStringLiteral("KAISER"), sidebar);
+    brand->setObjectName(QStringLiteral("brand"));
+    auto *brandAccent = new QLabel(QStringLiteral("STUDIO  ·  QT"), sidebar);
+    brandAccent->setObjectName(QStringLiteral("brandAccent"));
+    auto *brandSub = new QLabel(QStringLiteral("SERVO DRIVE WORKBENCH"), sidebar);
+    brandSub->setObjectName(QStringLiteral("brandSub"));
+    sidebarLayout->addWidget(brand);
+    sidebarLayout->addWidget(brandAccent);
+    sidebarLayout->addWidget(brandSub);
+
+    auto *navScroll = new QScrollArea(sidebar);
+    navScroll->setObjectName(QStringLiteral("navScroll"));
+    navScroll->setWidgetResizable(true);
+    navScroll->setFrameShape(QFrame::NoFrame);
+    navScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *navContainer = new QWidget(navScroll);
+    navContainer->setObjectName(QStringLiteral("navContainer"));
+    auto *navLayout = new QVBoxLayout(navContainer);
+    navLayout->setContentsMargins(0, 10, 0, 0);
+    navLayout->setSpacing(7);
+    navScroll->setWidget(navContainer);
+    sidebarLayout->addWidget(navScroll, 1);
+
+    m_stack = new QStackedWidget(shell);
+    m_dashboard = new DashboardPage(m_stack);
+    m_parameterPage = new ParameterPage(m_parameterModel, m_stack);
+    m_monitorPage = new MonitorPage(m_stack);
+    m_communicationPage = new CommunicationPage(m_stack);
+    m_driveInfoPage = new DriveInfoPage(m_stack);
+    m_stack->addWidget(m_dashboard);
+    m_stack->addWidget(m_parameterPage);
+    m_stack->addWidget(m_monitorPage);
+    m_stack->addWidget(m_communicationPage);
+    m_stack->addWidget(m_driveInfoPage);
+
+    const auto addPageShortcut = [this](Qt::Key key, int pageIndex) {
+        auto *shortcut = new QShortcut(QKeySequence(key), this);
+        connect(shortcut, &QShortcut::activated, this,
+                [this, pageIndex]() { showPage(pageIndex); });
+    };
+    addPageShortcut(Qt::Key_F1, 0);
+    addPageShortcut(Qt::Key_F2, 1);
+    addPageShortcut(Qt::Key_F3, 2);
+    addPageShortcut(Qt::Key_F4, 3);
+    addPageShortcut(Qt::Key_F5, 4);
+
+    m_navGroup = new QButtonGroup(this);
+    m_navGroup->setExclusive(true);
+    navLayout->addWidget(navSectionLabel(QStringLiteral("主要工作区"), sidebar));
+    navLayout->addWidget(createNavButton(QStringLiteral("连接设备"), 3));
+    navLayout->addWidget(createNavButton(QStringLiteral("实时概览"), 0));
+    navLayout->addWidget(createNavButton(QStringLiteral("参数设定"), 1,
+                                         QStringLiteral("全部参数")));
+    navLayout->addWidget(createNavButton(QStringLiteral("实时示波器"), 2));
+    navLayout->addWidget(createNavButton(QStringLiteral("驱动器信息"), 4));
+    navLayout->addSpacing(12);
+    navLayout->addWidget(navSectionLabel(QStringLiteral("设备参数"), sidebar));
+    navLayout->addWidget(createNavButton(QStringLiteral("电机"), 1,
+                                         QStringLiteral("电机")));
+    navLayout->addWidget(createNavButton(QStringLiteral("反馈"), 1,
+                                         QStringLiteral("反馈")));
+    navLayout->addWidget(createNavButton(QStringLiteral("制动器"), 1,
+                                         QStringLiteral("制动器")));
+    navLayout->addWidget(createNavButton(QStringLiteral("限定"), 1,
+                                         QStringLiteral("限定")));
+    navLayout->addWidget(createNavButton(QStringLiteral("再生电阻"), 1,
+                                         QStringLiteral("再生电阻")));
+    navLayout->addWidget(createNavButton(QStringLiteral("数字 I/O"), 1,
+                                         QStringLiteral("数字 I/O")));
+    navLayout->addWidget(createNavButton(QStringLiteral("控制与标定"), 1,
+                                         QStringLiteral("控制与标定")));
+    navLayout->addWidget(createNavButton(QStringLiteral("参数复位"), 1,
+                                         QStringLiteral("系统"),
+                                         QStringLiteral("参数复位与系统功能")));
+    navLayout->addWidget(createNavButton(QStringLiteral("系统"), 1,
+                                         QStringLiteral("系统")));
+    navLayout->addWidget(createNavButton(QStringLiteral("备份与恢复"), 1,
+                                         QStringLiteral("全部参数"),
+                                         QStringLiteral("参数备份与恢复")));
+    navLayout->addWidget(createNavButton(QStringLiteral("使能与故障"), 0,
+                                         QString(),
+                                         QStringLiteral("使能与故障状态")));
+    navLayout->addStretch();
+
+    auto *safetyNote = new QLabel(
+        QStringLiteral("参数写入前请确认设备处于安全状态。"), sidebar);
+    safetyNote->setObjectName(QStringLiteral("sidebarNote"));
+    safetyNote->setWordWrap(true);
+    sidebarLayout->addWidget(safetyNote);
+    auto *version = new QLabel(QStringLiteral("KaiserStudio Qt · 0.2"), sidebar);
+    version->setObjectName(QStringLiteral("versionLabel"));
+    sidebarLayout->addWidget(version);
+    shellLayout->addWidget(sidebar);
+
+    auto *workspace = new QWidget(shell);
+    workspace->setObjectName(QStringLiteral("workspace"));
+    auto *workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceLayout->setSpacing(0);
+
+    auto *topBar = new QFrame(workspace);
+    topBar->setObjectName(QStringLiteral("topBar"));
+    topBar->setFixedHeight(58);
+    auto *topLayout = new QHBoxLayout(topBar);
+    topLayout->setContentsMargins(28, 0, 28, 0);
+    m_pageTitle = new QLabel(QStringLiteral("实时设备概览"), topBar);
+    m_pageTitle->setObjectName(QStringLiteral("topTitle"));
+    m_topEnableLabel = new QLabel(QStringLiteral("DISABLED"), topBar);
+    m_topEnableLabel->setObjectName(QStringLiteral("ribbonChip"));
+    m_topEnableLabel->setProperty("state", QStringLiteral("warning"));
+    m_topFaultLabel = new QLabel(QStringLiteral("NO FLT"), topBar);
+    m_topFaultLabel->setObjectName(QStringLiteral("ribbonChip"));
+    m_topFaultLabel->setProperty("state", QStringLiteral("online"));
+    m_topModeLabel = new QLabel(QStringLiteral("驱动模式 · SAFE"), topBar);
+    m_topModeLabel->setObjectName(QStringLiteral("ribbonChip"));
+    m_topMonitorCombo = new QComboBox(topBar);
+    m_topMonitorCombo->setObjectName(QStringLiteral("monitorCombo"));
+    m_topMonitorCombo->addItem(QStringLiteral("监视 · 力/转矩"), 79);
+    m_topMonitorCombo->addItem(QStringLiteral("监视 · 位移量"), 81);
+    m_topConnectionLabel = new QLabel(QStringLiteral("●  未连接"), topBar);
+    m_topConnectionLabel->setObjectName(QStringLiteral("connectionChip"));
+    m_topConnectionLabel->setProperty("state", QStringLiteral("offline"));
+    topLayout->addWidget(m_pageTitle);
+    topLayout->addStretch();
+    topLayout->addWidget(m_topEnableLabel);
+    topLayout->addWidget(m_topFaultLabel);
+    topLayout->addWidget(m_topMonitorCombo);
+    topLayout->addWidget(m_topModeLabel);
+    topLayout->addWidget(m_topConnectionLabel);
+    workspaceLayout->addWidget(topBar);
+
+    auto *liveRibbon = new QFrame(workspace);
+    liveRibbon->setObjectName(QStringLiteral("liveRibbon"));
+    liveRibbon->setFixedHeight(66);
+    auto *liveLayout = new QHBoxLayout(liveRibbon);
+    liveLayout->setContentsMargins(24, 8, 24, 8);
+    liveLayout->setSpacing(8);
+    const auto addLiveMetric = [liveRibbon, liveLayout](
+                                   const QString &caption,
+                                   const QString &unit,
+                                   QLabel *&valueLabel) {
+        auto *cell = new QWidget(liveRibbon);
+        cell->setObjectName(QStringLiteral("liveMetric"));
+        auto *cellLayout = new QVBoxLayout(cell);
+        cellLayout->setContentsMargins(12, 3, 12, 3);
+        cellLayout->setSpacing(0);
+        auto *captionLabel = new QLabel(caption, cell);
+        captionLabel->setObjectName(QStringLiteral("liveCaption"));
+        auto *valueRow = new QHBoxLayout;
+        valueRow->setContentsMargins(0, 0, 0, 0);
+        valueRow->setSpacing(4);
+        valueLabel = new QLabel(QStringLiteral("--"), cell);
+        valueLabel->setObjectName(QStringLiteral("liveValue"));
+        auto *unitLabel = new QLabel(unit, cell);
+        unitLabel->setObjectName(QStringLiteral("liveUnit"));
+        valueRow->addWidget(valueLabel);
+        valueRow->addWidget(unitLabel, 0, Qt::AlignBottom);
+        valueRow->addStretch();
+        cellLayout->addWidget(captionLabel);
+        cellLayout->addLayout(valueRow);
+        liveLayout->addWidget(cell, 1);
+    };
+    addLiveMetric(QStringLiteral("位置"), QStringLiteral("count"), m_livePosition);
+    addLiveMetric(QStringLiteral("多圈"), QStringLiteral("count"), m_liveMultiTurn);
+    addLiveMetric(QStringLiteral("单圈"), QStringLiteral("count"), m_liveSingleTurn);
+    addLiveMetric(QStringLiteral("速度"), QStringLiteral("rpm"), m_liveSpeed);
+    addLiveMetric(QStringLiteral("电流"), QStringLiteral("A"), m_liveCurrent);
+    addLiveMetric(QStringLiteral("母线电压"), QStringLiteral("V"), m_liveVoltage);
+    addLiveMetric(QStringLiteral("力/转矩"), QStringLiteral("raw"), m_liveForce);
+    workspaceLayout->addWidget(liveRibbon);
+    workspaceLayout->addWidget(m_stack, 1);
+    shellLayout->addWidget(workspace, 1);
+
+    statusBar()->setSizeGripEnabled(false);
+    m_dirtyStatusLabel = new QLabel(this);
+    m_dirtyStatusLabel->setObjectName(QStringLiteral("statusBarText"));
+    statusBar()->addPermanentWidget(m_dirtyStatusLabel);
+    statusBar()->showMessage(QStringLiteral("就绪"));
+
+    showPage(0);
+}
+
+QPushButton *MainWindow::createNavButton(const QString &text, int pageIndex,
+                                         const QString &group,
+                                         const QString &viewTitle)
+{
+    auto *button = new QPushButton(text, this);
+    button->setObjectName(QStringLiteral("navButton"));
+    button->setCheckable(true);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setProperty("pageIndex", pageIndex);
+    button->setProperty("group", group);
+    button->setMinimumHeight(38);
+    m_navGroup->addButton(button);
+
+    connect(button, &QPushButton::clicked, this,
+            [this, pageIndex, group, viewTitle]() {
+                if (!group.isEmpty()) {
+                    showParametersForGroup(group);
+                } else {
+                    showPage(pageIndex);
+                }
+                if (!viewTitle.isEmpty()) {
+                    setCurrentPageTitle(viewTitle);
+                }
+            });
+    return button;
+}
+
+void MainWindow::setCurrentPageTitle(const QString &title)
+{
+    m_pageTitle->setText(title);
+}
+
+void MainWindow::updateDirtyStatus(int count)
+{
+    if (count == 0) {
+        m_dirtyStatusLabel->setText(QStringLiteral("参数无未写入修改"));
+    } else {
+        m_dirtyStatusLabel->setText(QStringLiteral("%1 个参数待写入").arg(count));
+    }
+}
+
+void MainWindow::applyStyle()
+{
+    setStyleSheet(QStringLiteral(R"(
+        QMainWindow, QWidget#appShell, QWidget#workspace {
+            background: #F3F6FA;
+            color: #172033;
+            font-family: "Microsoft YaHei UI", "Segoe UI";
+            font-size: 13px;
+        }
+        QWidget#sidebar {
+            background: #111827;
+            border-right: 1px solid #1F2937;
+        }
+        QScrollArea#navScroll, QWidget#navContainer {
+            background: transparent;
+            border: none;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 6px;
+            margin: 2px 0;
+        }
+        QScrollBar::handle:vertical {
+            background: #334155;
+            border-radius: 3px;
+            min-height: 24px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+        QLabel#brand {
+            color: #F8FAFC;
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: 2px;
+        }
+        QLabel#brandAccent {
+            color: #2DD4BF;
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+        QLabel#brandSub, QLabel#versionLabel {
+            color: #64748B;
+            font-size: 10px;
+            letter-spacing: 1px;
+        }
+        QLabel#navSection {
+            color: #64748B;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 9px 8px 3px 8px;
+            letter-spacing: 1px;
+        }
+        QPushButton#navButton {
+            color: #CBD5E1;
+            background: transparent;
+            border: none;
+            border-radius: 7px;
+            text-align: left;
+            padding: 9px 12px;
+        }
+        QPushButton#navButton:hover {
+            color: #FFFFFF;
+            background: #1E293B;
+        }
+        QPushButton#navButton:checked {
+            color: #FFFFFF;
+            background: #0F766E;
+            font-weight: 700;
+        }
+        QLabel#sidebarNote {
+            color: #94A3B8;
+            background: #182235;
+            border: 1px solid #273449;
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 11px;
+        }
+        QFrame#topBar {
+            background: #FFFFFF;
+            border-bottom: 1px solid #E2E8F0;
+        }
+        QFrame#liveRibbon {
+            background: #111827;
+            border-bottom: 1px solid #1F2937;
+        }
+        QWidget#liveMetric {
+            background: #172235;
+            border: 1px solid #263449;
+            border-radius: 7px;
+        }
+        QLabel#liveCaption {
+            color: #94A3B8;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        QLabel#liveValue {
+            color: #F8FAFC;
+            font-family: "Cascadia Mono", "Consolas";
+            font-size: 18px;
+            font-weight: 700;
+        }
+        QLabel#liveUnit {
+            color: #64748B;
+            font-size: 9px;
+            padding-bottom: 3px;
+        }
+        QLabel#topTitle {
+            color: #172033;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        QLabel#connectionChip, QLabel#statusPill {
+            padding: 7px 12px;
+            border-radius: 14px;
+            background: #E2E8F0;
+            color: #475569;
+            font-weight: 600;
+        }
+        QLabel#connectionChip[state="online"], QLabel#statusPill[state="online"] {
+            color: #0F766E;
+            background: #CCFBF1;
+        }
+        QLabel#statusPill[state="warning"] {
+            color: #B45309;
+            background: #FEF3C7;
+        }
+        QLabel#ribbonChip {
+            padding: 5px 9px;
+            margin-left: 5px;
+            border-radius: 5px;
+            background: #F1F5F9;
+            color: #64748B;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QLabel#ribbonChip[state="online"] {
+            color: #0F766E;
+            background: #CCFBF1;
+        }
+        QLabel#ribbonChip[state="warning"] {
+            color: #B45309;
+            background: #FEF3C7;
+        }
+        QLabel#ribbonChip[state="error"] {
+            color: #B91C1C;
+            background: #FEE2E2;
+        }
+        QComboBox#monitorCombo {
+            min-height: 26px;
+            padding: 1px 8px;
+            color: #475569;
+            background: #F1F5F9;
+            border: 1px solid #E2E8F0;
+            border-radius: 5px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        QLabel#pageHeading {
+            color: #111827;
+            font-size: 24px;
+            font-weight: 800;
+        }
+        QLabel#pageSubtitle, QLabel#mutedText {
+            color: #64748B;
+        }
+        QFrame#panel {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+        }
+        QLabel#sectionTitle {
+            color: #1E293B;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        QFrame#metricCard {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+        }
+        QLabel#metricTitle {
+            color: #64748B;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        QLabel#metricValue {
+            color: #0F172A;
+            font-size: 25px;
+            font-weight: 800;
+        }
+        QLabel#metricUnit {
+            color: #94A3B8;
+            font-size: 11px;
+            padding-bottom: 4px;
+        }
+        QLabel#metricNote {
+            color: #94A3B8;
+            font-size: 10px;
+        }
+        QFrame#smallStatCard {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+        }
+        QLabel#smallStatValue {
+            color: #0F172A;
+            font-size: 20px;
+            font-weight: 700;
+        }
+        QLabel#deviceStatusRow {
+            color: #334155;
+            background: #F8FAFC;
+            border-radius: 6px;
+            padding: 9px 10px;
+        }
+        QLabel#deviceStatusRow[state="online"] {
+            color: #0F766E;
+            background: #ECFDF5;
+        }
+        QLabel#deviceStatusRow[state="offline"] {
+            color: #64748B;
+        }
+        QLabel#deviceHero {
+            color: #0F172A;
+            font-family: "Cascadia Mono", "Consolas";
+            font-size: 24px;
+            font-weight: 800;
+        }
+        QLabel#infoCaption {
+            color: #64748B;
+            font-size: 11px;
+        }
+        QLabel#infoValue {
+            color: #1E293B;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        QLabel#infoCodeBlock {
+            color: #D1FAE5;
+            background: #0F172A;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: "Cascadia Mono", "Consolas";
+            font-size: 11px;
+        }
+        QLabel#warningText {
+            color: #B45309;
+            font-weight: 600;
+        }
+        QPushButton {
+            min-height: 34px;
+            border-radius: 7px;
+            padding: 0 14px;
+            font-weight: 600;
+        }
+        QPushButton#primaryButton {
+            color: #FFFFFF;
+            background: #0F766E;
+            border: 1px solid #0F766E;
+        }
+        QPushButton#primaryButton:hover { background: #0D9488; }
+        QPushButton#secondaryButton {
+            color: #1E293B;
+            background: #FFFFFF;
+            border: 1px solid #CBD5E1;
+        }
+        QPushButton#secondaryButton:hover { background: #F8FAFC; }
+        QPushButton#successButton {
+            color: #FFFFFF;
+            background: #15803D;
+            border: 1px solid #15803D;
+        }
+        QPushButton#successButton:hover { background: #16A34A; }
+        QPushButton#dangerButton {
+            color: #FFFFFF;
+            background: #B91C1C;
+            border: 1px solid #B91C1C;
+        }
+        QPushButton#dangerButton:hover { background: #DC2626; }
+        QPushButton#ghostButton {
+            color: #475569;
+            background: transparent;
+            border: 1px solid transparent;
+        }
+        QPushButton#ghostButton:hover {
+            color: #0F766E;
+            background: #ECFDF5;
+        }
+        QPushButton#modeButton {
+            color: #64748B;
+            background: #F1F5F9;
+            border: 1px solid #E2E8F0;
+            padding: 0 10px;
+        }
+        QPushButton#modeButton:checked {
+            color: #FFFFFF;
+            background: #334155;
+            border-color: #334155;
+        }
+        QPushButton:disabled {
+            color: #94A3B8;
+            background: #E2E8F0;
+            border-color: #E2E8F0;
+        }
+        QLineEdit, QComboBox, QPlainTextEdit {
+            background: #FFFFFF;
+            color: #172033;
+            border: 1px solid #CBD5E1;
+            border-radius: 7px;
+            padding: 6px 9px;
+            selection-background-color: #0F766E;
+        }
+        QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
+            border: 1px solid #0F766E;
+        }
+        QTableView#parameterTable {
+            background: #FFFFFF;
+            alternate-background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 9px;
+            gridline-color: #EEF2F7;
+            selection-background-color: #DDF7F1;
+            selection-color: #0F172A;
+        }
+        QTableWidget#compactParameterTable {
+            background: #FFFFFF;
+            alternate-background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 9px;
+            gridline-color: #E2E8F0;
+            selection-background-color: #DDF7F1;
+            selection-color: #0F172A;
+        }
+        QTableWidget#compactParameterTable::item {
+            padding: 3px 6px;
+        }
+        QHeaderView::section {
+            background: #F1F5F9;
+            color: #475569;
+            border: none;
+            border-bottom: 1px solid #E2E8F0;
+            padding: 9px;
+            font-weight: 700;
+        }
+        QTableView QLineEdit {
+            border: none;
+            border-radius: 0;
+            background: #FFF7D6;
+        }
+        QProgressBar {
+            background: #E2E8F0;
+            border: none;
+            border-radius: 6px;
+            text-align: center;
+            color: #334155;
+            min-height: 18px;
+        }
+        QProgressBar::chunk {
+            background: #0D9488;
+            border-radius: 6px;
+        }
+        QPlainTextEdit#communicationLog {
+            background: #0F172A;
+            color: #D1FAE5;
+            border: 1px solid #1E293B;
+            font-family: "Cascadia Mono", "Consolas";
+            font-size: 12px;
+            padding: 10px;
+        }
+        QStatusBar {
+            background: #FFFFFF;
+            border-top: 1px solid #E2E8F0;
+            color: #64748B;
+        }
+        QLabel#statusBarText {
+            color: #64748B;
+            padding-right: 12px;
+        }
+        QChartView#chartView {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+        }
+    )"));
 }
