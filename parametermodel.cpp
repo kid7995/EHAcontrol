@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QTextStream>
 
+#include <cmath>
+
 ParameterModel::ParameterModel(QObject *parent)
     : QAbstractTableModel(parent)
     , m_definitions(ParameterCatalog::all().toVector())
@@ -63,6 +65,10 @@ QVariant ParameterModel::data(const QModelIndex &index, int role) const
         if (definition.signedDecimalEncoding) {
             return ParameterCatalog::decodePn169(entry.value);
         }
+        if (definition.decimals > 0) {
+            const double factor = std::pow(10.0, definition.decimals);
+            return QString::number(entry.value / factor, 'f', definition.decimals);
+        }
         return entry.value;
     case UnitColumn:
         return definition.unit;
@@ -114,7 +120,7 @@ bool ParameterModel::setData(const QModelIndex &index, const QVariant &value, in
     }
 
     bool ok = false;
-    const int logicalValue = value.toInt(&ok);
+    const double numericValue = value.toDouble(&ok);
     if (!ok) {
         return false;
     }
@@ -124,12 +130,14 @@ bool ParameterModel::setData(const QModelIndex &index, const QVariant &value, in
     quint16 rawValue = 0;
 
     if (definition.signedDecimalEncoding) {
-        rawValue = ParameterCatalog::encodePn169(logicalValue);
+        rawValue = ParameterCatalog::encodePn169(qRound(numericValue));
     } else {
-        if (logicalValue < 0 || logicalValue > 65535) {
+        const double factor = std::pow(10.0, definition.decimals);
+        const int scaledValue = qRound(numericValue * factor);
+        if (scaledValue < 0 || scaledValue > 65535) {
             return false;
         }
-        rawValue = static_cast<quint16>(logicalValue);
+        rawValue = static_cast<quint16>(scaledValue);
     }
 
     Entry &entry = m_entries[parameterIndex];
@@ -279,12 +287,15 @@ bool ParameterModel::exportCsv(const QString &fileName, QString *error) const
     stream << "Pn,Name,Value,Unit,Group,State\n";
     for (const ParameterDefinition &definition : m_definitions) {
         const Entry &entry = m_entries.at(definition.index);
-        const int exportedValue = definition.signedDecimalEncoding
+        const double exportedValue = definition.signedDecimalEncoding
             ? ParameterCatalog::decodePn169(entry.value)
-            : static_cast<int>(entry.value);
+            : (definition.decimals > 0
+                   ? entry.value / std::pow(10.0, definition.decimals)
+                   : static_cast<double>(entry.value));
         QString escapedName = definition.name;
         escapedName.replace(QLatin1Char('"'), QStringLiteral("\"\""));
-        stream << definition.index << ",\"" << escapedName << "\"," << exportedValue << ','
+        stream << definition.index << ",\"" << escapedName << "\","
+               << QString::number(exportedValue, 'f', definition.decimals) << ','
                << definition.unit << ',' << definition.group << ',' << stateText(entry) << '\n';
     }
     return true;
@@ -323,15 +334,19 @@ bool ParameterModel::importCsv(const QString &fileName, QString *error)
         bool parameterOk = false;
         bool valueOk = false;
         const int parameter = fields.at(0).toInt(&parameterOk);
-        const int logicalValue = fields.at(2).toInt(&valueOk);
+        const double logicalValue = fields.at(2).toDouble(&valueOk);
         if (!parameterOk || !valueOk || parameter < 0 || parameter >= m_entries.size()) {
             continue;
         }
 
         Entry &entry = m_entries[parameter];
-        entry.value = m_definitions.at(parameter).signedDecimalEncoding
-            ? ParameterCatalog::encodePn169(logicalValue)
-            : static_cast<quint16>(qBound(0, logicalValue, 65535));
+        if (m_definitions.at(parameter).signedDecimalEncoding) {
+            entry.value = ParameterCatalog::encodePn169(qRound(logicalValue));
+        } else {
+            const double factor = std::pow(10.0, m_definitions.at(parameter).decimals);
+            entry.value = static_cast<quint16>(
+                qBound(0, qRound(logicalValue * factor), 65535));
+        }
         entry.dirty = !entry.confirmed || entry.value != entry.remoteValue;
         ++imported;
     }

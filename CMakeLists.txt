@@ -30,8 +30,19 @@ set(PROJECT_SOURCES
     communicationpage.h
     driveinfopage.cpp
     driveinfopage.h
+    faultpage.cpp
+    faultpage.h
+    feedbackpage.cpp
+    feedbackpage.h
+    deviceconfigpage.cpp
+    deviceconfigpage.h
+    digitaliopage.cpp
+    digitaliopage.h
+    homingpage.cpp
+    homingpage.h
     icon.qrc
     image.qrc
+    reference_assets.qrc
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

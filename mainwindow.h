@@ -7,7 +7,12 @@
 
 class CommunicationPage;
 class DashboardPage;
+class DeviceConfigPage;
+class DigitalIoPage;
 class DriveInfoPage;
+class FaultPage;
+class FeedbackPage;
+class HomingPage;
 class MonitorPage;
 class ParameterModel;
 class ParameterPage;
@@ -62,6 +67,18 @@ private:
     MonitorPage *m_monitorPage = nullptr;
     CommunicationPage *m_communicationPage = nullptr;
     DriveInfoPage *m_driveInfoPage = nullptr;
+    DeviceConfigPage *m_motorPage = nullptr;
+    DeviceConfigPage *m_brakePage = nullptr;
+    DeviceConfigPage *m_limitsPage = nullptr;
+    DeviceConfigPage *m_resistorPage = nullptr;
+    HomingPage *m_homingPage = nullptr;
+    FaultPage *m_faultPage = nullptr;
+    DigitalIoPage *m_digitalIoPage = nullptr;
+    FeedbackPage *m_feedbackPage = nullptr;
+    DeviceConfigPage *m_currentLoopPage = nullptr;
+    DeviceConfigPage *m_velocityLoopPage = nullptr;
+    DeviceConfigPage *m_positionLoopPage = nullptr;
+    DeviceConfigPage *m_motionModePage = nullptr;
     QStackedWidget *m_stack = nullptr;
     QLabel *m_pageTitle = nullptr;
     QLabel *m_topConnectionLabel = nullptr;

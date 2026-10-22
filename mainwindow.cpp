@@ -2,7 +2,12 @@
 
 #include "communicationpage.h"
 #include "dashboardpage.h"
+#include "deviceconfigpage.h"
+#include "digitaliopage.h"
 #include "driveinfopage.h"
+#include "faultpage.h"
+#include "feedbackpage.h"
+#include "homingpage.h"
 #include "monitorpage.h"
 #include "parametermodel.h"
 #include "parameterpage.h"
@@ -51,6 +56,8 @@ MainWindow::MainWindow(QWidget *parent)
             m_parameterModel, &ParameterModel::setRemoteValue);
     connect(m_serial, &DeviceSerialService::parameterValueReceived,
             m_driveInfoPage, &DriveInfoPage::setParameterValue);
+    connect(m_serial, &DeviceSerialService::parameterValueReceived,
+            m_feedbackPage, &FeedbackPage::setParameterValue);
     connect(m_serial, &DeviceSerialService::parameterReadProgress,
             m_parameterPage, &ParameterPage::setReadProgress);
     connect(m_serial, &DeviceSerialService::parameterReadProgress,
@@ -113,6 +120,49 @@ MainWindow::MainWindow(QWidget *parent)
             this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
     connect(m_driveInfoPage, &DriveInfoPage::readAllRequested,
             this, &MainWindow::readAllParameters);
+    connect(m_faultPage, &FaultPage::enableRequested,
+            m_serial, &DeviceSerialService::requestMotorEnable);
+    connect(m_faultPage, &FaultPage::disableRequested,
+            m_serial, &DeviceSerialService::requestMotorDisable);
+    connect(m_faultPage, &FaultPage::faultResetRequested,
+            m_serial, &DeviceSerialService::requestFaultReset);
+    connect(m_digitalIoPage, &DigitalIoPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_feedbackPage, &FeedbackPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_feedbackPage, &FeedbackPage::parameterWriteRequested,
+            this, [this](quint16 parameter, quint16 value) {
+                m_serial->writeParameter(parameter, value);
+            });
+    connect(m_feedbackPage, &FeedbackPage::rawFrameRequested,
+            m_serial, &DeviceSerialService::sendFrame);
+    connect(m_feedbackPage, &FeedbackPage::statusMessage,
+            this, [this](const QString &message) {
+                statusBar()->showMessage(message, 5000);
+            });
+    for (DeviceConfigPage *page : {m_motorPage, m_brakePage, m_limitsPage,
+                                   m_resistorPage, m_currentLoopPage,
+                                   m_velocityLoopPage, m_positionLoopPage,
+                                   m_motionModePage}) {
+        connect(m_serial, &DeviceSerialService::parameterValueReceived,
+                page, &DeviceConfigPage::setParameterValue);
+        connect(page, &DeviceConfigPage::readAllRequested,
+                this, &MainWindow::readAllParameters);
+        connect(page, &DeviceConfigPage::writeRequested,
+                this, [this](quint16 parameter, quint16 value) {
+                    if (m_serial->writeParameter(parameter, value)) {
+                        statusBar()->showMessage(
+                            QStringLiteral("已提交 Pn%1 = %2")
+                                .arg(parameter, 3, 10, QLatin1Char('0'))
+                                .arg(value),
+                            4000);
+                    }
+                });
+        connect(page, &DeviceConfigPage::statusMessage,
+                this, [this](const QString &message) {
+                    statusBar()->showMessage(message, 5000);
+                });
+    }
     connect(m_parameterModel, &ParameterModel::dirtyStateChanged,
             this, &MainWindow::updateDirtyStatus);
 
@@ -168,6 +218,14 @@ void MainWindow::setConnectionState(bool connected, const QString &portName)
     m_communicationPage->setConnected(connected, portName);
     m_dashboard->setConnectionState(connected, portName);
     m_driveInfoPage->setConnected(connected, portName);
+    m_faultPage->setConnected(connected);
+    m_feedbackPage->setConnected(connected);
+    for (DeviceConfigPage *page : {m_motorPage, m_brakePage, m_limitsPage,
+                                   m_resistorPage, m_currentLoopPage,
+                                   m_velocityLoopPage, m_positionLoopPage,
+                                   m_motionModePage}) {
+        page->setConnected(connected);
+    }
     m_parameterPage->setConnected(connected);
     m_monitorPage->setConnected(connected);
 
@@ -201,6 +259,12 @@ void MainWindow::handleTelemetry(const DeviceSerialService::Telemetry &telemetry
     m_dashboard->updateTelemetry(telemetry);
     m_monitorPage->updateTelemetry(telemetry);
     m_driveInfoPage->updateTelemetry(telemetry);
+    if (telemetry.statusKnown) {
+        m_faultPage->setMotorEnabled(telemetry.motorEnabled);
+        m_feedbackPage->setMotorEnabled(telemetry.motorEnabled);
+    }
+    m_faultPage->setFaultCode(telemetry.faultCode);
+    m_feedbackPage->updateTelemetry(telemetry);
     m_livePosition->setText(QString::number(telemetry.position, 'f', 0));
     m_liveMultiTurn->setText(QString::number(telemetry.multiTurnPosition, 'f', 0));
     m_liveSingleTurn->setText(QString::number(telemetry.singleTurnPosition, 'f', 0));
@@ -323,6 +387,18 @@ void MainWindow::showPage(int index)
         QStringLiteral("实时示波器"),
         QStringLiteral("串口通信中心"),
         QStringLiteral("驱动器信息"),
+        QStringLiteral("电机参数"),
+        QStringLiteral("制动器参数"),
+        QStringLiteral("限定与保护"),
+        QStringLiteral("再生电阻"),
+        QStringLiteral("回零方式与轨迹"),
+        QStringLiteral("使能、报警与故障"),
+        QStringLiteral("数字 I/O"),
+        QStringLiteral("反馈与编码器"),
+        QStringLiteral("电流环"),
+        QStringLiteral("速度环"),
+        QStringLiteral("位置环"),
+        QStringLiteral("驱动模式与运动配置"),
     };
     if (index < titles.size()) {
         setCurrentPageTitle(titles.at(index));
@@ -453,11 +529,164 @@ void MainWindow::createInterface()
     m_monitorPage = new MonitorPage(m_stack);
     m_communicationPage = new CommunicationPage(m_stack);
     m_driveInfoPage = new DriveInfoPage(m_stack);
+    m_motorPage = new DeviceConfigPage(
+        QStringLiteral("电机参数"),
+        QStringLiteral("配置电机额定电流与极对数。页面字段及参数编号来自参考版电机页的写入事件。"),
+        {
+            {85, QStringLiteral("电机额定电流"), QStringLiteral("A"),
+             QStringLiteral("驱动器内部按原始值 × 0.01 显示，例如 420 表示 4.20 A。"),
+             100.0, 2, 4.20},
+            {80, QStringLiteral("电机极对数"), QStringLiteral("对"),
+             QStringLiteral("极对数必须与电机铭牌一致，否则可能导致方向、转矩或过载异常。"),
+             1.0, 0, 8.0},
+        },
+        m_stack);
+    m_brakePage = new DeviceConfigPage(
+        QStringLiteral("制动器参数"),
+        QStringLiteral("配置制动器控制方式、动作电压和稳态保持电压。修改后应确认垂直负载不会下滑。"),
+        {
+            {151, QStringLiteral("制动器控制类型"), QString(),
+             QStringLiteral("0 = 伺服 ON/OFF 控制制动器；1 = 强制松开；2 = 强制闭合。"),
+             1.0, 0, 0.0,
+             {QStringLiteral("伺服 ON/OFF 控制（正常模式）"),
+              QStringLiteral("强制松开制动器"),
+              QStringLiteral("强制闭合制动器")}},
+            {26, QStringLiteral("制动器控制电压"), QStringLiteral("V"),
+             QStringLiteral("制动器释放或动作阶段的控制电压。"),
+             1.0, 0, 7.0},
+            {25, QStringLiteral("制动器稳态保持电压"), QStringLiteral("V"),
+             QStringLiteral("制动器保持阶段电压；参考参数文件中默认原始值为 150。"),
+             1.0, 0, 150.0},
+        },
+        m_stack);
+    m_limitsPage = new DeviceConfigPage(
+        QStringLiteral("限定与保护"),
+        QStringLiteral("配置母线电压、过载、额定电流和速度保护。保护阈值应覆盖正常工况并留出安全裕量。"),
+        {
+            {24, QStringLiteral("母线电压限定"), QStringLiteral("V"),
+             QStringLiteral("过压报警与再生制动行为会受该阈值影响。"),
+             1.0, 0, 430.0},
+            {91, QStringLiteral("瞬时过载保护倍数"), QStringLiteral("×"),
+             QStringLiteral("参考 Er006：瞬时软件过载报警会检查该参数。"),
+             1.0, 0, 30.0},
+            {92, QStringLiteral("长时过载保护倍数"), QStringLiteral("×"),
+             QStringLiteral("参考 Er005：长时软件过载报警会检查该参数。"),
+             1.0, 0, 15.0},
+            {85, QStringLiteral("电机额定电流"), QStringLiteral("A"),
+             QStringLiteral("过载保护基准，按原始值 × 0.01 显示。"),
+             100.0, 2, 4.20},
+            {130, QStringLiteral("电机转速限定"), QStringLiteral("rpm"),
+             QStringLiteral("Er014/Er015 表明给定或实际转速超过该值时触发报警。"),
+             1.0, 0, 6000.0},
+        },
+        m_stack);
+    m_resistorPage = new DeviceConfigPage(
+        QStringLiteral("再生电阻"),
+        QStringLiteral("设置再生电阻投入电压阈值。阈值过高可能削弱制动效果，过低可能造成误投入。"),
+        {
+            {20, QStringLiteral("再生电阻投入电压阈值"), QStringLiteral("V"),
+             QStringLiteral("参考 Er020：报警处理需要检查再生电阻接入、功率等级和该阈值。"),
+             1.0, 0, 390.0},
+        },
+        m_stack);
+    m_homingPage = new HomingPage(m_stack);
+    m_faultPage = new FaultPage(m_stack);
+    m_digitalIoPage = new DigitalIoPage(m_stack);
+    m_feedbackPage = new FeedbackPage(m_stack);
+    m_currentLoopPage = new DeviceConfigPage(
+        QStringLiteral("电流环"),
+        QStringLiteral("配置电流环比例、积分和反电势补偿。调试前应确认电机额定电流与过载保护。"),
+        {
+            {31, QStringLiteral("电流环比例增益 KCP"), QString(),
+             QStringLiteral("增大可提高动态响应，但过高可能引起噪声或振荡。"), 1.0, 0, 1000.0},
+            {32, QStringLiteral("电流环积分增益 KCI"), QString(),
+             QStringLiteral("用于减小稳态误差，应结合 KCP 成组调整。"), 1.0, 0, 300.0},
+            {141, QStringLiteral("反电势补偿系数 KEMF"), QString(),
+             QStringLiteral("参考版当前页显示 Pn141。"), 1.0, 0, 0.0},
+            {140, QStringLiteral("反电势补偿开关"), QString(),
+             QStringLiteral("参考版将 Pn140 的 0/1 映射为 Disabled/Enabled。"),
+             1.0, 0, 0.0,
+             {QStringLiteral("Disabled"), QStringLiteral("Enabled")}},
+        },
+        m_stack);
+    m_velocityLoopPage = new DeviceConfigPage(
+        QStringLiteral("速度环"),
+        QStringLiteral("配置速度环 KVP、KVI 和速度前馈 KVFR；滤波器参数需结合负载惯量调整。"),
+        {
+            {33, QStringLiteral("速度环比例增益 KVP"), QString(),
+             QStringLiteral("参数文件默认原始值 500。"), 1.0, 0, 500.0},
+            {34, QStringLiteral("速度环积分增益 KVI"), QString(),
+             QStringLiteral("参数文件默认原始值 1000。"), 1.0, 0, 1000.0},
+            {35, QStringLiteral("速度前馈 KVFR"), QString(),
+             QStringLiteral("参考版速度前馈组对应 Pn035。"), 1.0, 0, 0.0},
+        },
+        m_stack);
+    m_positionLoopPage = new DeviceConfigPage(
+        QStringLiteral("位置环"),
+        QStringLiteral("配置位置环双增益、积分、前馈和平滑/输出滤波。修改前应保存可恢复的调参方案。"),
+        {
+            {65, QStringLiteral("位置环比例增益1 KPP1"), QString(),
+             QStringLiteral("Er010 建议可适当提高 Pn065 以改善位置偏差。"), 1.0, 0, 21.0},
+            {68, QStringLiteral("位置环积分增益 KPI"), QString(),
+             QStringLiteral("参考版位置环剩余独立参数对应 Pn068。"), 1.0, 0, 0.0},
+            {63, QStringLiteral("位置环比例增益2 KPP2"), QString(),
+             QStringLiteral("参数文件默认原始值 2000。"), 1.0, 0, 2000.0},
+            {64, QStringLiteral("位置前馈 KPVFR"), QStringLiteral("%"),
+             QStringLiteral("参考版性能参数表的百分比字段。"), 1.0, 0, 100.0},
+            {66, QStringLiteral("平滑位置指令滤波 PCMDF"), QStringLiteral("%"),
+             QStringLiteral("用于平滑位置指令，过大会增加响应延迟。"), 1.0, 0, 0.0},
+            {67, QStringLiteral("位置环输出滤波 POUTF"), QStringLiteral("%"),
+             QStringLiteral("用于抑制位置环输出高频成分。"), 1.0, 0, 0.0},
+        },
+        m_stack);
+    m_motionModePage = new DeviceConfigPage(
+        QStringLiteral("驱动模式与运动配置"),
+        QStringLiteral("配置串行电流、串行速度、串行位置、位置齿轮、回零或内部速度模式，"
+                       "并集中调整三类控制环性能参数。模式切换应在下使能状态执行。"),
+        {
+            {1, QStringLiteral("驱动模式 Pn001"), QString(),
+             QStringLiteral("0 串行电流；1 串行速度；2 串行位置；3 位置齿轮；4 回零；5 内部速度。"),
+             1.0, 0, 0.0,
+             {QStringLiteral("串行电流"), QStringLiteral("串行速度"),
+              QStringLiteral("串行位置"), QStringLiteral("位置齿轮"),
+              QStringLiteral("回零"), QStringLiteral("内部速度")}},
+            {31, QStringLiteral("电流环比例增益 KCP"), QString(), QString(), 1.0, 0, 1000.0},
+            {32, QStringLiteral("电流环积分增益 KCI"), QString(), QString(), 1.0, 0, 300.0},
+            {33, QStringLiteral("速度环比例增益 KVP"), QString(), QString(), 1.0, 0, 500.0},
+            {34, QStringLiteral("速度环积分增益 KVI"), QString(), QString(), 1.0, 0, 1000.0},
+            {65, QStringLiteral("位置环比例增益1 KPP1"), QString(), QString(), 1.0, 0, 21.0},
+            {63, QStringLiteral("位置环比例增益2 KPP2"), QString(), QString(), 1.0, 0, 2000.0},
+            {64, QStringLiteral("位置前馈 KPVFR"), QStringLiteral("%"), QString(), 1.0, 0, 100.0},
+            {66, QStringLiteral("平滑位置指令滤波 PCMDF"), QStringLiteral("%"), QString(), 1.0, 0, 0.0},
+            {67, QStringLiteral("位置环输出滤波 POUTF"), QStringLiteral("%"), QString(), 1.0, 0, 0.0},
+            {8, QStringLiteral("脉冲输入类型 Pn008"), QString(),
+             QStringLiteral("修改后通常需要重新上电。"),
+             1.0, 0, 0.0,
+             {QStringLiteral("脉冲+方向（Pulse+Dir）"),
+              QStringLiteral("双脉冲（CW+CCW）"),
+              QStringLiteral("AB 正交（A+B）")}},
+            {58, QStringLiteral("每转指令脉冲数1（高四位）"), QString(), QString(), 1.0, 0, 0.0},
+            {59, QStringLiteral("每转指令脉冲数2（低四位）"), QString(), QString(), 1.0, 0, 2000.0},
+            {120, QStringLiteral("从站节点地址"), QString(), QString(), 1.0, 0, 1.0},
+        },
+        m_stack);
     m_stack->addWidget(m_dashboard);
     m_stack->addWidget(m_parameterPage);
     m_stack->addWidget(m_monitorPage);
     m_stack->addWidget(m_communicationPage);
     m_stack->addWidget(m_driveInfoPage);
+    m_stack->addWidget(m_motorPage);
+    m_stack->addWidget(m_brakePage);
+    m_stack->addWidget(m_limitsPage);
+    m_stack->addWidget(m_resistorPage);
+    m_stack->addWidget(m_homingPage);
+    m_stack->addWidget(m_faultPage);
+    m_stack->addWidget(m_digitalIoPage);
+    m_stack->addWidget(m_feedbackPage);
+    m_stack->addWidget(m_currentLoopPage);
+    m_stack->addWidget(m_velocityLoopPage);
+    m_stack->addWidget(m_positionLoopPage);
+    m_stack->addWidget(m_motionModePage);
 
     const auto addPageShortcut = [this](Qt::Key key, int pageIndex) {
         auto *shortcut = new QShortcut(QKeySequence(key), this);
@@ -469,7 +698,13 @@ void MainWindow::createInterface()
     addPageShortcut(Qt::Key_F3, 2);
     addPageShortcut(Qt::Key_F4, 3);
     addPageShortcut(Qt::Key_F5, 4);
-
+    addPageShortcut(Qt::Key_F6, 5);
+    addPageShortcut(Qt::Key_F7, 6);
+    addPageShortcut(Qt::Key_F8, 7);
+    addPageShortcut(Qt::Key_F9, 8);
+    addPageShortcut(Qt::Key_F10, 9);
+    addPageShortcut(Qt::Key_F11, 10);
+    addPageShortcut(Qt::Key_F12, 11);
     m_navGroup = new QButtonGroup(this);
     m_navGroup->setExclusive(true);
     navLayout->addWidget(navSectionLabel(QStringLiteral("主要工作区"), sidebar));
@@ -481,31 +716,28 @@ void MainWindow::createInterface()
     navLayout->addWidget(createNavButton(QStringLiteral("驱动器信息"), 4));
     navLayout->addSpacing(12);
     navLayout->addWidget(navSectionLabel(QStringLiteral("设备参数"), sidebar));
-    navLayout->addWidget(createNavButton(QStringLiteral("电机"), 1,
-                                         QStringLiteral("电机")));
-    navLayout->addWidget(createNavButton(QStringLiteral("反馈"), 1,
-                                         QStringLiteral("反馈")));
-    navLayout->addWidget(createNavButton(QStringLiteral("制动器"), 1,
-                                         QStringLiteral("制动器")));
-    navLayout->addWidget(createNavButton(QStringLiteral("限定"), 1,
-                                         QStringLiteral("限定")));
-    navLayout->addWidget(createNavButton(QStringLiteral("再生电阻"), 1,
-                                         QStringLiteral("再生电阻")));
-    navLayout->addWidget(createNavButton(QStringLiteral("数字 I/O"), 1,
-                                         QStringLiteral("数字 I/O")));
+    navLayout->addWidget(createNavButton(QStringLiteral("电机"), 5));
+    navLayout->addWidget(createNavButton(QStringLiteral("反馈"), 12));
+    navLayout->addWidget(createNavButton(QStringLiteral("制动器"), 6));
+    navLayout->addWidget(createNavButton(QStringLiteral("限定"), 7));
+    navLayout->addWidget(createNavButton(QStringLiteral("再生电阻"), 8));
+    navLayout->addWidget(createNavButton(QStringLiteral("数字 I/O"), 11));
     navLayout->addWidget(createNavButton(QStringLiteral("控制与标定"), 1,
                                          QStringLiteral("控制与标定")));
+    navLayout->addWidget(createNavButton(QStringLiteral("电流环"), 13));
+    navLayout->addWidget(createNavButton(QStringLiteral("速度环"), 14));
+    navLayout->addWidget(createNavButton(QStringLiteral("位置环"), 15));
+    navLayout->addWidget(createNavButton(QStringLiteral("驱动模式"), 16));
     navLayout->addWidget(createNavButton(QStringLiteral("参数复位"), 1,
                                          QStringLiteral("系统"),
                                          QStringLiteral("参数复位与系统功能")));
     navLayout->addWidget(createNavButton(QStringLiteral("系统"), 1,
                                          QStringLiteral("系统")));
+    navLayout->addWidget(createNavButton(QStringLiteral("回零"), 9));
     navLayout->addWidget(createNavButton(QStringLiteral("备份与恢复"), 1,
                                          QStringLiteral("全部参数"),
                                          QStringLiteral("参数备份与恢复")));
-    navLayout->addWidget(createNavButton(QStringLiteral("使能与故障"), 0,
-                                         QString(),
-                                         QStringLiteral("使能与故障状态")));
+    navLayout->addWidget(createNavButton(QStringLiteral("使能与故障"), 10));
     navLayout->addStretch();
 
     auto *safetyNote = new QLabel(
@@ -894,6 +1126,13 @@ void MainWindow::applyStyle()
             font-family: "Cascadia Mono", "Consolas";
             font-size: 11px;
         }
+        QLabel#fieldHint {
+            color: #64748B;
+            background: #F8FAFC;
+            border-left: 3px solid #CBD5E1;
+            padding: 6px 9px;
+            font-size: 11px;
+        }
         QLabel#warningText {
             color: #B45309;
             font-weight: 600;
@@ -984,6 +1223,27 @@ void MainWindow::applyStyle()
         }
         QTableWidget#compactParameterTable::item {
             padding: 3px 6px;
+        }
+        QTableWidget#faultTable {
+            background: #FFFFFF;
+            alternate-background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 9px;
+            gridline-color: #E2E8F0;
+            selection-background-color: #FEF3C7;
+            selection-color: #78350F;
+        }
+        QTableWidget#faultTable::item {
+            padding: 5px 7px;
+        }
+        QTableWidget#ioTable {
+            background: #FFFFFF;
+            alternate-background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 7px;
+            gridline-color: #EEF2F7;
+            selection-background-color: #DDF7F1;
+            selection-color: #0F172A;
         }
         QHeaderView::section {
             background: #F1F5F9;

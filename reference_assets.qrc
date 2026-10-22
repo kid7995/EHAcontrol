@@ -1,0 +1,30 @@
+<RCC>
+    <qresource prefix="/reference/homing">
+        <file alias="hom1.png">assets/homing/hom1.png</file>
+        <file alias="hom2.png">assets/homing/hom2.png</file>
+        <file alias="hom7.png">assets/homing/hom7.png</file>
+        <file alias="hom8.png">assets/homing/hom8.png</file>
+        <file alias="hom9.png">assets/homing/hom9.png</file>
+        <file alias="hom10.png">assets/homing/hom10.png</file>
+        <file alias="hom11.png">assets/homing/hom11.png</file>
+        <file alias="hom12.png">assets/homing/hom12.png</file>
+        <file alias="hom13.png">assets/homing/hom13.png</file>
+        <file alias="hom14.png">assets/homing/hom14.png</file>
+        <file alias="hom24.png">assets/homing/hom24.png</file>
+        <file alias="hom28.png">assets/homing/hom28.png</file>
+        <file alias="hom33.png">assets/homing/hom33.png</file>
+        <file alias="hom34.png">assets/homing/hom34.png</file>
+        <file alias="hom35.png">assets/homing/hom35.png</file>
+        <file alias="homtext1.png">assets/homing/homtext1.png</file>
+        <file alias="homtext2.png">assets/homing/homtext2.png</file>
+        <file alias="homtext7.png">assets/homing/homtext7.png</file>
+        <file alias="homtext8.png">assets/homing/homtext8.png</file>
+        <file alias="homtext9.png">assets/homing/homtext9.png</file>
+        <file alias="homtext10.png">assets/homing/homtext10.png</file>
+        <file alias="homtext11.png">assets/homing/homtext11.png</file>
+        <file alias="homtext12.png">assets/homing/homtext12.png</file>
+    </qresource>
+    <qresource prefix="/reference/data">
+        <file alias="ErrorCode.xml">assets/reference/ErrorCode.xml</file>
+    </qresource>
+</RCC>

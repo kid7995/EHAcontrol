@@ -20,24 +20,35 @@ QList<ParameterDefinition> buildCatalog()
     const QHash<quint16, QString> names {
         {0, QStringLiteral("系统复位")},
         {2, QStringLiteral("数显屏显示模式")},
+        {20, QStringLiteral("再生电阻投入电压阈值")},
+        {24, QStringLiteral("母线电压限定")},
+        {25, QStringLiteral("制动器稳态保持电压")},
+        {26, QStringLiteral("制动器控制电压")},
         {31, QStringLiteral("位置环比例增益")},
         {32, QStringLiteral("速度环相关参数")},
         {33, QStringLiteral("位置指令滤波")},
         {34, QStringLiteral("前馈相关参数")},
         {44, QStringLiteral("目标设定力")},
         {48, QStringLiteral("质量基准清零")},
-        {58, QStringLiteral("回零方向选择")},
-        {59, QStringLiteral("回零速度")},
-        {63, QStringLiteral("速度环比例增益")},
-        {64, QStringLiteral("速度环积分时间")},
-        {65, QStringLiteral("速度环微分参数")},
+        {58, QStringLiteral("电机每转指令脉冲数1（高四位）")},
+        {59, QStringLiteral("电机每转指令脉冲数2（低四位）")},
+        {63, QStringLiteral("速度环比例增益 KVP")},
+        {64, QStringLiteral("速度环积分增益 KVI")},
+        {65, QStringLiteral("位置环比例增益1 KPP1")},
         {66, QStringLiteral("速度反馈滤波")},
         {67, QStringLiteral("速度环输出限幅")},
+        {70, QStringLiteral("EtherCAT 丢帧容错阈值")},
+        {80, QStringLiteral("电机极对数")},
+        {85, QStringLiteral("电机额定电流")},
+        {91, QStringLiteral("瞬时过载保护倍数")},
+        {92, QStringLiteral("长时过载保护倍数")},
         {102, QStringLiteral("力矩零点触发")},
         {120, QStringLiteral("数字量输出配置")},
         {140, QStringLiteral("正向标定点 1")},
         {149, QStringLiteral("正向标定点 10")},
+        {151, QStringLiteral("制动器控制类型")},
         {152, QStringLiteral("参数保存到 EEPROM")},
+        {130, QStringLiteral("电机转速限定")},
         {160, QStringLiteral("控制模式选择")},
         {168, QStringLiteral("力标定 K 值（增益）")},
         {169, QStringLiteral("力标定 B 值（偏置）")},
@@ -55,12 +66,37 @@ QList<ParameterDefinition> buildCatalog()
         definition.index = index;
         definition.name = names.value(index, pointName(index));
         definition.group = ParameterCatalog::defaultGroupForIndex(index);
-        definition.decimals = index == 169 ? 0 : 0;
+        if (index == 85) {
+            definition.group = QStringLiteral("电机");
+        } else if (index == 25 || index == 26 || index == 151) {
+            definition.group = QStringLiteral("制动器");
+        } else if (index == 20) {
+            definition.group = QStringLiteral("再生电阻");
+        } else if (index == 24 || index == 91 || index == 92 || index == 130) {
+            definition.group = QStringLiteral("限定");
+        }
+        definition.decimals = index == 85 ? 2 : 0;
         definition.signedDecimalEncoding = index == 169;
 
         switch (index) {
         case 44:
             definition.unit = QStringLiteral("N");
+            break;
+        case 20:
+        case 24:
+        case 25:
+        case 26:
+            definition.unit = QStringLiteral("V");
+            break;
+        case 85:
+            definition.unit = QStringLiteral("A");
+            break;
+        case 91:
+        case 92:
+            definition.unit = QStringLiteral("×");
+            break;
+        case 130:
+            definition.unit = QStringLiteral("rpm");
             break;
         case 169:
             definition.unit = QStringLiteral("逻辑值");
