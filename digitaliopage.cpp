@@ -4,7 +4,9 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -81,6 +83,33 @@ DigitalIoPage::DigitalIoPage(QWidget *parent)
     tablesRow->addWidget(outputPanel, 1);
     root->addLayout(tablesRow, 1);
 
+    auto *configurationPanel = new QFrame(this);
+    configurationPanel->setObjectName(QStringLiteral("panel"));
+    auto *configurationLayout = new QHBoxLayout(configurationPanel);
+    configurationLayout->setContentsMargins(16, 12, 16, 12);
+    configurationLayout->setSpacing(12);
+    auto *configurationTitle = new QLabel(QStringLiteral("I/O 配置原始值"), configurationPanel);
+    configurationTitle->setObjectName(QStringLiteral("sectionTitle"));
+    configurationLayout->addWidget(configurationTitle);
+    const auto addConfigField = [configurationPanel, configurationLayout](
+                                    const QString &label, QSpinBox *&editor) {
+        auto *caption = new QLabel(label, configurationPanel);
+        caption->setObjectName(QStringLiteral("infoCaption"));
+        editor = new QSpinBox(configurationPanel);
+        editor->setRange(0, 65535);
+        editor->setMinimumWidth(115);
+        configurationLayout->addWidget(caption);
+        configurationLayout->addWidget(editor);
+    };
+    addConfigField(QStringLiteral("Pn013"), m_inputA);
+    addConfigField(QStringLiteral("Pn014"), m_inputB);
+    addConfigField(QStringLiteral("Pn015"), m_outputA);
+    addConfigField(QStringLiteral("Pn016"), m_outputB);
+    m_writeButton = new QPushButton(QStringLiteral("写入 I/O 配置"), configurationPanel);
+    m_writeButton->setObjectName(QStringLiteral("primaryButton"));
+    configurationLayout->addWidget(m_writeButton);
+    root->addWidget(configurationPanel);
+
     auto *footer = new QLabel(
         QStringLiteral("参考版写 I/O 配置时使用 Pn013/Pn014（输入）和 Pn015/Pn016（输出）成对命令；"
                        "正式启用前需要结合具体机型确认位定义。"),
@@ -90,6 +119,44 @@ DigitalIoPage::DigitalIoPage(QWidget *parent)
     root->addWidget(footer);
 
     connect(readButton, &QPushButton::clicked, this, &DigitalIoPage::readAllRequested);
+    connect(m_writeButton, &QPushButton::clicked,
+            this, &DigitalIoPage::applyConfiguration);
+    setConnected(false);
+}
+
+void DigitalIoPage::setConnected(bool connected)
+{
+    for (QWidget *widget : std::initializer_list<QWidget *>{
+             m_inputA, m_inputB, m_outputA, m_outputB}) {
+        widget->setEnabled(connected);
+    }
+    m_writeButton->setEnabled(connected);
+}
+
+void DigitalIoPage::setParameterValue(quint16 parameter, quint16 value)
+{
+    switch (parameter) {
+    case 13: m_inputA->setValue(value); break;
+    case 14: m_inputB->setValue(value); break;
+    case 15: m_outputA->setValue(value); break;
+    case 16: m_outputB->setValue(value); break;
+    default: break;
+    }
+}
+
+void DigitalIoPage::applyConfiguration()
+{
+    if (QMessageBox::question(
+            this, QStringLiteral("写入数字 I/O 配置"),
+            QStringLiteral("将写入 Pn013/Pn014 输入配置和 Pn015/Pn016 输出配置。\n\n"
+                           "请确认端子映射、有效电平和整机安全逻辑。"))
+        != QMessageBox::Yes) {
+        return;
+    }
+    emit parameterWriteRequested(13, static_cast<quint16>(m_inputA->value()));
+    emit parameterWriteRequested(14, static_cast<quint16>(m_inputB->value()));
+    emit parameterWriteRequested(15, static_cast<quint16>(m_outputA->value()));
+    emit parameterWriteRequested(16, static_cast<quint16>(m_outputB->value()));
 }
 
 QTableWidget *DigitalIoPage::createTable(const QVector<QStringList> &rows, QWidget *parent)

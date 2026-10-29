@@ -78,8 +78,10 @@ void sendData(quint16 pn, quint16 value) {
 1. serial->open()
 2. 发送握手包: 55 55 B9 9B 9B B9 AA AA
 3. delayMS(50)          // 等待设备就绪
-4. sendData(2, 79)      // 设置参数监视模式
-5. 启动心跳定时器(100ms)
+4. 启动心跳定时器(100ms)
+
+> Qt 版连接时不覆盖设备已有的 `Pn002`，直接显示设备
+> 当前设置对应的 `EF AD AB 07` 参数监视值。
 ```
 
 ---
@@ -134,7 +136,7 @@ for (int i = 0; i <= buf.size() - 7; ++i) {
 
 | type值 | 含义         | 数值类型      | 典型用途               |
 |--------|--------------|---------------|------------------------|
-| `0x07` | 转矩/力反馈  | uint32        | 实时显示输出力         |
+| `0x07` | 参数监视值   | uint32        | 内容由设备 `Pn002` 决定 |
 | `0x08` | 电流         | int32（有符号）| 电流监控               |
 | `0x09` | 速度         | int32（有符号）| 速度监控               |
 | `0x0A` | 多圈位置     | uint32        | 绝对位置               |
@@ -157,7 +159,7 @@ for (int i = 0; i <= buf.size() - 8; ++i) {
     qint32  rawS = (qint32)rawU;
 
     switch (type) {
-    case 0x07: /* 力/转矩反馈: rawU */ break;
+    case 0x07: /* 参数监视值: rawU，由 Pn002 决定内容 */ break;
     case 0x09: /* 速度:        rawS */ break;
     case 0x0C: /* 位置:        rawS */ break;
     }

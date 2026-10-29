@@ -6,6 +6,8 @@
 #include <QMainWindow>
 
 class CommunicationPage;
+class BackupPage;
+class AboutPage;
 class DashboardPage;
 class DeviceConfigPage;
 class DigitalIoPage;
@@ -16,11 +18,13 @@ class HomingPage;
 class MonitorPage;
 class ParameterModel;
 class ParameterPage;
+class PreferencesPage;
 class QButtonGroup;
-class QComboBox;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
+class QTimer;
+class ResetPage;
 
 class MainWindow : public QMainWindow
 {
@@ -41,9 +45,7 @@ private slots:
     void handleTelemetry(const DeviceSerialService::Telemetry &telemetry);
     void readAllParameters();
     void writeDirtyParameters();
-    void writeAndSaveParameters();
     void requestParameterSave();
-    void showParametersForGroup(const QString &group);
     void showPage(int index);
     void handleParameterReadFinished(bool complete, int received);
     void handleSerialError(const QString &message);
@@ -53,12 +55,13 @@ private:
     bool confirmReadWhileDirty();
     bool confirmWrite(const QMap<quint16, quint16> &values);
     void createInterface();
-    QPushButton *createNavButton(const QString &text, int pageIndex,
-                                 const QString &group = QString(),
-                                 const QString &viewTitle = QString());
+    QPushButton *createNavButton(const QString &text, int pageIndex);
     void applyStyle();
     void setCurrentPageTitle(const QString &title);
     void updateDirtyStatus(int count);
+    void flushTelemetryUi();
+    void applyTelemetryToUi(const DeviceSerialService::Telemetry &telemetry);
+    void updateMonitorMetric(const DeviceSerialService::Telemetry &telemetry);
 
     DeviceSerialService *m_serial = nullptr;
     ParameterModel *m_parameterModel = nullptr;
@@ -79,22 +82,28 @@ private:
     DeviceConfigPage *m_velocityLoopPage = nullptr;
     DeviceConfigPage *m_positionLoopPage = nullptr;
     DeviceConfigPage *m_motionModePage = nullptr;
+    BackupPage *m_backupPage = nullptr;
+    ResetPage *m_resetPage = nullptr;
+    PreferencesPage *m_preferencesPage = nullptr;
+    AboutPage *m_aboutPage = nullptr;
     QStackedWidget *m_stack = nullptr;
-    QLabel *m_pageTitle = nullptr;
     QLabel *m_topConnectionLabel = nullptr;
     QLabel *m_topEnableLabel = nullptr;
     QLabel *m_topFaultLabel = nullptr;
     QLabel *m_topModeLabel = nullptr;
-    QComboBox *m_topMonitorCombo = nullptr;
     QLabel *m_livePosition = nullptr;
     QLabel *m_liveMultiTurn = nullptr;
     QLabel *m_liveSingleTurn = nullptr;
     QLabel *m_liveSpeed = nullptr;
     QLabel *m_liveCurrent = nullptr;
     QLabel *m_liveVoltage = nullptr;
-    QLabel *m_liveForce = nullptr;
+    QLabel *m_liveMonitorValue = nullptr;
+    QLabel *m_liveMonitorUnit = nullptr;
     QLabel *m_dirtyStatusLabel = nullptr;
     QButtonGroup *m_navGroup = nullptr;
+    QTimer *m_telemetryUiTimer = nullptr;
+    DeviceSerialService::Telemetry m_pendingUiTelemetry;
+    bool m_hasPendingUiTelemetry = false;
     bool m_connected = false;
     bool m_writingAndSaving = false;
 };

@@ -8,6 +8,7 @@ class QComboBox;
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
+class QTimer;
 
 class CommunicationPage : public QWidget
 {
@@ -38,6 +39,7 @@ private slots:
     void toggleConnection();
     void sendRawCommand();
     void clearLog();
+    void updateTrafficRate();
 
 private:
     QComboBox *m_portCombo = nullptr;
@@ -47,6 +49,7 @@ private:
     QComboBox *m_stopBitsCombo = nullptr;
     QPushButton *m_connectButton = nullptr;
     QLabel *m_connectionLabel = nullptr;
+    QLabel *m_trafficRateLabel = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QPlainTextEdit *m_rawInput = nullptr;
     QPushButton *m_readButton = nullptr;
@@ -54,6 +57,13 @@ private:
     QPushButton *m_disableButton = nullptr;
     QPushButton *m_faultButton = nullptr;
     QPushButton *m_saveButton = nullptr;
+    QTimer *m_rateTimer = nullptr;
+    QByteArray m_pendingReceiveLog;
+    qint64 m_rateWindowStartMs = 0;
+    qint64 m_windowRxBytes = 0;
+    qint64 m_windowTxBytes = 0;
+    double m_rxBytesPerSecond = 0.0;
+    double m_txBytesPerSecond = 0.0;
     bool m_connected = false;
 };
 

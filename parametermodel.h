@@ -33,8 +33,6 @@ public:
     bool setData(const QModelIndex &index, const QVariant &value,
                  int role = Qt::EditRole) override;
 
-    void setGroupFilter(const QString &group);
-    void setTextFilter(const QString &text);
     void setRemoteValue(quint16 parameter, quint16 rawValue);
     void markWritten(quint16 parameter);
     int applyReadValues(const QMap<quint16, quint16> &values);
@@ -48,11 +46,13 @@ public:
 
     bool exportCsv(const QString &fileName, QString *error = nullptr) const;
     bool importCsv(const QString &fileName, QString *error = nullptr);
+    bool exportDriveText(const QString &fileName, QString *error = nullptr) const;
+    bool importDriveText(const QString &fileName, QString *error = nullptr);
     void restoreRemoteValues();
 
 signals:
     void dirtyStateChanged(int count);
-    void groupFilterChanged(const QString &group);
+    void parameterEdited(quint16 parameter, quint16 rawValue);
 
 private:
     struct Entry {
@@ -62,16 +62,10 @@ private:
         bool dirty = false;
     };
 
-    void rebuildVisibleRows();
-    int rowForParameter(quint16 parameter) const;
     QString stateText(const Entry &entry) const;
-    bool matchesFilter(const ParameterDefinition &definition) const;
 
     QVector<ParameterDefinition> m_definitions;
     QVector<Entry> m_entries;
-    QVector<int> m_visibleIndices;
-    QString m_groupFilter = QStringLiteral("全部参数");
-    QString m_textFilter;
 };
 
 #endif // PARAMETERMODEL_H

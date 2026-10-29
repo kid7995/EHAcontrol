@@ -27,4 +27,15 @@
     <qresource prefix="/reference/data">
         <file alias="ErrorCode.xml">assets/reference/ErrorCode.xml</file>
     </qresource>
+    <qresource prefix="/reference/images">
+        <file alias="brake_control_voltage.png">assets/reference/images/brake_control_voltage.png</file>
+        <file alias="brake_pwm_off.png">assets/reference/images/brake_pwm_off.png</file>
+        <file alias="feedback_ab.png">assets/reference/images/feedback_ab.png</file>
+        <file alias="feedback_cw_ccw.png">assets/reference/images/feedback_cw_ccw.png</file>
+        <file alias="feedback_pulse_dir.png">assets/reference/images/feedback_pulse_dir.png</file>
+        <file alias="backup.png">assets/reference/images/backup.png</file>
+        <file alias="restore.png">assets/reference/images/restore.png</file>
+        <file alias="enable_and.png">assets/reference/images/enable_and.png</file>
+        <file alias="enable_and1.png">assets/reference/images/enable_and1.png</file>
+    </qresource>
 </RCC>

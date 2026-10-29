@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 
 #include "communicationpage.h"
+#include "backuppage.h"
+#include "aboutpage.h"
 #include "dashboardpage.h"
 #include "deviceconfigpage.h"
 #include "digitaliopage.h"
@@ -11,6 +13,9 @@
 #include "monitorpage.h"
 #include "parametermodel.h"
 #include "parameterpage.h"
+#include "preferencespage.h"
+#include <QSettings>
+#include "resetpage.h"
 
 #include <QAbstractButton>
 #include <QButtonGroup>
@@ -26,6 +31,7 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTimer>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -48,16 +54,26 @@ MainWindow::MainWindow(QWidget *parent)
     createInterface();
     applyStyle();
 
+    m_telemetryUiTimer = new QTimer(this);
+    m_telemetryUiTimer->setInterval(50);
+    m_telemetryUiTimer->setSingleShot(true);
+    connect(m_telemetryUiTimer, &QTimer::timeout,
+            this, &MainWindow::flushTelemetryUi);
+
     connect(m_serial, &DeviceSerialService::connectionChanged,
             this, &MainWindow::setConnectionState);
     connect(m_serial, &DeviceSerialService::telemetryUpdated,
             this, &MainWindow::handleTelemetry);
+    connect(m_serial, &DeviceSerialService::telemetryUpdated,
+            m_monitorPage, &MonitorPage::updateTelemetry);
     connect(m_serial, &DeviceSerialService::parameterValueReceived,
             m_parameterModel, &ParameterModel::setRemoteValue);
     connect(m_serial, &DeviceSerialService::parameterValueReceived,
             m_driveInfoPage, &DriveInfoPage::setParameterValue);
     connect(m_serial, &DeviceSerialService::parameterValueReceived,
             m_feedbackPage, &FeedbackPage::setParameterValue);
+    connect(m_serial, &DeviceSerialService::parameterValueReceived,
+            m_digitalIoPage, &DigitalIoPage::setParameterValue);
     connect(m_serial, &DeviceSerialService::parameterReadProgress,
             m_parameterPage, &ParameterPage::setReadProgress);
     connect(m_serial, &DeviceSerialService::parameterReadProgress,
@@ -68,10 +84,14 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_serial, &DeviceSerialService::parameterReadFinished,
             this, &MainWindow::handleParameterReadFinished);
+    connect(m_serial, &DeviceSerialService::parameterReadFinished,
+            m_backupPage, &BackupPage::handleParameterReadFinished);
     connect(m_serial, &DeviceSerialService::frameLogged,
             m_communicationPage, &CommunicationPage::logFrame);
     connect(m_serial, &DeviceSerialService::errorOccurred,
             this, &MainWindow::handleSerialError);
+    connect(m_serial, &DeviceSerialService::errorOccurred,
+            m_faultPage, &FaultPage::appendHistory);
 
     connect(m_communicationPage, &CommunicationPage::openRequested,
             this, &MainWindow::openSerial);
@@ -100,26 +120,35 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::requestParameterSave);
     connect(m_dashboard, &DashboardPage::openCommunicationRequested,
             this, &MainWindow::showCommunicationPage);
-    connect(m_topMonitorCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this]() {
-                if (m_connected) {
-                    m_serial->writeParameter(
-                        2, static_cast<quint16>(m_topMonitorCombo->currentData().toInt()));
-                }
-            });
-
     connect(m_parameterPage, &ParameterPage::readAllRequested,
             this, &MainWindow::readAllParameters);
-    connect(m_parameterPage, &ParameterPage::writeDirtyRequested,
-            this, &MainWindow::writeDirtyParameters);
-    connect(m_parameterPage, &ParameterPage::writeAndSaveRequested,
-            this, &MainWindow::writeAndSaveParameters);
+    connect(m_parameterPage, &ParameterPage::parameterWriteRequested,
+            this, [this](quint16 parameter, quint16 rawValue) {
+                if (!m_serial->writeParameter(parameter, rawValue)) {
+                    QMessageBox::warning(
+                        this, QStringLiteral("参数修改失败"),
+                        QStringLiteral("无法写入 Pn%1，请检查设备连接。")
+                            .arg(parameter, 3, 10, QLatin1Char('0')));
+                    return;
+                }
+                m_parameterModel->markWritten(parameter);
+                QTimer::singleShot(0, this, [this, parameter]() {
+                    QMessageBox::information(
+                        this, QStringLiteral("参数修改完成"),
+                        QStringLiteral("Pn%1 参数修改完成。")
+                            .arg(parameter, 3, 10, QLatin1Char('0')));
+                });
+            });
     connect(m_parameterPage, &ParameterPage::statusMessage,
             this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
     connect(m_monitorPage, &MonitorPage::statusMessage,
             this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
     connect(m_driveInfoPage, &DriveInfoPage::readAllRequested,
             this, &MainWindow::readAllParameters);
+    connect(m_driveInfoPage, &DriveInfoPage::parameterWriteRequested,
+            this, [this](quint16 parameter, quint16 value) {
+                m_serial->writeParameter(parameter, value);
+            });
     connect(m_faultPage, &FaultPage::enableRequested,
             m_serial, &DeviceSerialService::requestMotorEnable);
     connect(m_faultPage, &FaultPage::disableRequested,
@@ -128,6 +157,10 @@ MainWindow::MainWindow(QWidget *parent)
             m_serial, &DeviceSerialService::requestFaultReset);
     connect(m_digitalIoPage, &DigitalIoPage::readAllRequested,
             this, &MainWindow::readAllParameters);
+    connect(m_digitalIoPage, &DigitalIoPage::parameterWriteRequested,
+            this, [this](quint16 parameter, quint16 value) {
+                m_serial->writeParameter(parameter, value);
+            });
     connect(m_feedbackPage, &FeedbackPage::readAllRequested,
             this, &MainWindow::readAllParameters);
     connect(m_feedbackPage, &FeedbackPage::parameterWriteRequested,
@@ -139,6 +172,39 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_feedbackPage, &FeedbackPage::statusMessage,
             this, [this](const QString &message) {
                 statusBar()->showMessage(message, 5000);
+            });
+    connect(m_backupPage, &BackupPage::readAllRequested,
+            this, &MainWindow::readAllParameters);
+    connect(m_backupPage, &BackupPage::writeDirtyRequested,
+            this, &MainWindow::writeDirtyParameters);
+    connect(m_backupPage, &BackupPage::statusMessage,
+            this, [this](const QString &message) {
+                statusBar()->showMessage(message, 5000);
+            });
+    connect(m_preferencesPage, &PreferencesPage::settingsSaved,
+            this, [this](int, bool) {
+                statusBar()->showMessage(
+                    QStringLiteral("应用配置已保存，下次启动时生效"), 5000);
+            });
+    connect(m_resetPage, &ResetPage::resetRequested,
+            this, [this]() {
+                if (!m_connected) {
+                    QMessageBox::information(this, QStringLiteral("参数复位"),
+                                             QStringLiteral("请先连接设备"));
+                    return;
+                }
+                if (QMessageBox::warning(
+                        this, QStringLiteral("恢复出厂参数"),
+                        QStringLiteral("该操作会覆盖当前全部参数，并可能需要重新配置电机、"
+                                       "编码器、控制环和安全功能。\n\n"
+                                       "确认已经完成参数备份且设备处于安全状态？"),
+                        QMessageBox::Yes | QMessageBox::Cancel,
+                        QMessageBox::Cancel)
+                    == QMessageBox::Yes) {
+                    m_serial->sendFrame(QByteArray::fromHex("555500000457AAAA"));
+                    statusBar()->showMessage(
+                        QStringLiteral("参数复位命令已发送，请随后重新上电"), 8000);
+                }
             });
     for (DeviceConfigPage *page : {m_motorPage, m_brakePage, m_limitsPage,
                                    m_resistorPage, m_currentLoopPage,
@@ -170,6 +236,11 @@ MainWindow::MainWindow(QWidget *parent)
     setMinimumSize(1180, 760);
     resize(1440, 900);
     updateDirtyStatus(0);
+    QSettings settings;
+    const int defaultPage = settings.value(QStringLiteral("ui/defaultPage"), 0).toInt();
+    if (defaultPage > 0 && defaultPage < m_stack->count()) {
+        showPage(defaultPage);
+    }
 }
 
 MainWindow::~MainWindow() = default;
@@ -219,7 +290,10 @@ void MainWindow::setConnectionState(bool connected, const QString &portName)
     m_dashboard->setConnectionState(connected, portName);
     m_driveInfoPage->setConnected(connected, portName);
     m_faultPage->setConnected(connected);
+    m_digitalIoPage->setConnected(connected);
     m_feedbackPage->setConnected(connected);
+    m_backupPage->setConnected(connected);
+    m_resetPage->setConnected(connected);
     for (DeviceConfigPage *page : {m_motorPage, m_brakePage, m_limitsPage,
                                    m_resistorPage, m_currentLoopPage,
                                    m_velocityLoopPage, m_positionLoopPage,
@@ -244,9 +318,11 @@ void MainWindow::setConnectionState(bool connected, const QString &portName)
         m_topFaultLabel->setProperty("state", QStringLiteral("offline"));
         m_topModeLabel->setText(QStringLiteral("驱动模式 · OFFLINE"));
         for (QLabel *label : {m_livePosition, m_liveMultiTurn, m_liveSingleTurn,
-                              m_liveSpeed, m_liveCurrent, m_liveVoltage, m_liveForce}) {
+                              m_liveSpeed, m_liveCurrent, m_liveVoltage,
+                              m_liveMonitorValue}) {
             label->setText(QStringLiteral("--"));
         }
+        m_liveMonitorUnit->setText(QStringLiteral("UU"));
         for (QLabel *label : {m_topEnableLabel, m_topFaultLabel}) {
             label->style()->unpolish(label);
             label->style()->polish(label);
@@ -256,8 +332,26 @@ void MainWindow::setConnectionState(bool connected, const QString &portName)
 
 void MainWindow::handleTelemetry(const DeviceSerialService::Telemetry &telemetry)
 {
+    m_pendingUiTelemetry = telemetry;
+    m_hasPendingUiTelemetry = true;
+    if (!m_telemetryUiTimer->isActive()) {
+        m_telemetryUiTimer->start();
+    }
+}
+
+void MainWindow::flushTelemetryUi()
+{
+    if (!m_hasPendingUiTelemetry) {
+        return;
+    }
+    m_hasPendingUiTelemetry = false;
+    applyTelemetryToUi(m_pendingUiTelemetry);
+}
+
+void MainWindow::applyTelemetryToUi(
+    const DeviceSerialService::Telemetry &telemetry)
+{
     m_dashboard->updateTelemetry(telemetry);
-    m_monitorPage->updateTelemetry(telemetry);
     m_driveInfoPage->updateTelemetry(telemetry);
     if (telemetry.statusKnown) {
         m_faultPage->setMotorEnabled(telemetry.motorEnabled);
@@ -271,7 +365,7 @@ void MainWindow::handleTelemetry(const DeviceSerialService::Telemetry &telemetry
     m_liveSpeed->setText(QString::number(telemetry.speed, 'f', 1));
     m_liveCurrent->setText(QString::number(telemetry.current, 'f', 2));
     m_liveVoltage->setText(QString::number(telemetry.busVoltage, 'f', 2));
-    m_liveForce->setText(QString::number(telemetry.force, 'f', 0));
+    updateMonitorMetric(telemetry);
     if (telemetry.statusKnown) {
         m_dashboard->setMotorEnabled(telemetry.motorEnabled);
         m_topEnableLabel->setText(telemetry.motorEnabled
@@ -298,6 +392,12 @@ void MainWindow::handleTelemetry(const DeviceSerialService::Telemetry &telemetry
     m_topModeLabel->setText(telemetry.motorEnabled
                                 ? QStringLiteral("驱动模式 · RUN")
                                 : QStringLiteral("驱动模式 · SAFE"));
+}
+
+void MainWindow::updateMonitorMetric(const DeviceSerialService::Telemetry &telemetry)
+{
+    m_liveMonitorValue->setText(QString::number(telemetry.parameterMonitor, 'f', 0));
+    m_liveMonitorUnit->setText(QStringLiteral("UU"));
 }
 
 void MainWindow::readAllParameters()
@@ -328,25 +428,6 @@ void MainWindow::writeDirtyParameters()
         QStringLiteral("已将 %1 个参数加入发送队列").arg(count), 5000);
 }
 
-void MainWindow::writeAndSaveParameters()
-{
-    const QMap<quint16, quint16> values = m_parameterModel->dirtyValues();
-    if (!confirmWrite(values)) {
-        return;
-    }
-
-    int count = 0;
-    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
-        if (m_serial->writeParameter(it.key(), it.value())) {
-            m_parameterModel->markWritten(it.key());
-            ++count;
-        }
-    }
-    requestParameterSave();
-    statusBar()->showMessage(
-        QStringLiteral("已提交 %1 个参数，并发送 Pn152 保存命令").arg(count), 6000);
-}
-
 void MainWindow::requestParameterSave()
 {
     if (!m_connected) {
@@ -364,15 +445,6 @@ void MainWindow::requestParameterSave()
         m_parameterModel->markWritten(152);
         statusBar()->showMessage(QStringLiteral("Pn152 保存命令已发送"), 5000);
     }
-}
-
-void MainWindow::showParametersForGroup(const QString &group)
-{
-    m_parameterPage->selectGroup(group);
-    showPage(1);
-    setCurrentPageTitle(group == QStringLiteral("全部参数")
-                            ? QStringLiteral("Pn 参数工作台")
-                            : QStringLiteral("%1参数").arg(group));
 }
 
 void MainWindow::showPage(int index)
@@ -399,6 +471,10 @@ void MainWindow::showPage(int index)
         QStringLiteral("速度环"),
         QStringLiteral("位置环"),
         QStringLiteral("驱动模式与运动配置"),
+        QStringLiteral("参数备份与恢复"),
+        QStringLiteral("参数复位"),
+        QStringLiteral("应用配置"),
+        QStringLiteral("关于"),
     };
     if (index < titles.size()) {
         setCurrentPageTitle(titles.at(index));
@@ -495,9 +571,9 @@ void MainWindow::createInterface()
 
     auto *sidebar = new QWidget(shell);
     sidebar->setObjectName(QStringLiteral("sidebar"));
-    sidebar->setFixedWidth(232);
+    sidebar->setFixedWidth(200);
     auto *sidebarLayout = new QVBoxLayout(sidebar);
-    sidebarLayout->setContentsMargins(18, 22, 18, 18);
+    sidebarLayout->setContentsMargins(14, 22, 14, 18);
     sidebarLayout->setSpacing(10);
 
     auto *brand = new QLabel(QStringLiteral("KAISER"), sidebar);
@@ -526,7 +602,7 @@ void MainWindow::createInterface()
     m_stack = new QStackedWidget(shell);
     m_dashboard = new DashboardPage(m_stack);
     m_parameterPage = new ParameterPage(m_parameterModel, m_stack);
-    m_monitorPage = new MonitorPage(m_stack);
+    m_monitorPage = new MonitorPage(m_parameterModel, m_stack);
     m_communicationPage = new CommunicationPage(m_stack);
     m_driveInfoPage = new DriveInfoPage(m_stack);
     m_motorPage = new DeviceConfigPage(
@@ -559,6 +635,12 @@ void MainWindow::createInterface()
              1.0, 0, 150.0},
         },
         m_stack);
+    m_brakePage->addIllustration(
+        QStringLiteral(":/reference/images/brake_control_voltage.png"),
+        QStringLiteral("制动器控制电压时序：释放阶段先施加控制电压，随后切换到稳态保持电压。"));
+    m_brakePage->addIllustration(
+        QStringLiteral(":/reference/images/brake_pwm_off.png"),
+        QStringLiteral("PWM OFF 延时用于伺服关闭后延迟撤除制动器激励，防止垂直负载下滑。"));
     m_limitsPage = new DeviceConfigPage(
         QStringLiteral("限定与保护"),
         QStringLiteral("配置母线电压、过载、额定电流和速度保护。保护阈值应覆盖正常工况并留出安全裕量。"),
@@ -670,6 +752,10 @@ void MainWindow::createInterface()
             {120, QStringLiteral("从站节点地址"), QString(), QString(), 1.0, 0, 1.0},
         },
         m_stack);
+    m_backupPage = new BackupPage(m_parameterModel, m_stack);
+    m_resetPage = new ResetPage(m_stack);
+    m_preferencesPage = new PreferencesPage(m_stack);
+    m_aboutPage = new AboutPage(m_stack);
     m_stack->addWidget(m_dashboard);
     m_stack->addWidget(m_parameterPage);
     m_stack->addWidget(m_monitorPage);
@@ -687,6 +773,10 @@ void MainWindow::createInterface()
     m_stack->addWidget(m_velocityLoopPage);
     m_stack->addWidget(m_positionLoopPage);
     m_stack->addWidget(m_motionModePage);
+    m_stack->addWidget(m_backupPage);
+    m_stack->addWidget(m_resetPage);
+    m_stack->addWidget(m_preferencesPage);
+    m_stack->addWidget(m_aboutPage);
 
     const auto addPageShortcut = [this](Qt::Key key, int pageIndex) {
         auto *shortcut = new QShortcut(QKeySequence(key), this);
@@ -710,8 +800,7 @@ void MainWindow::createInterface()
     navLayout->addWidget(navSectionLabel(QStringLiteral("主要工作区"), sidebar));
     navLayout->addWidget(createNavButton(QStringLiteral("连接设备"), 3));
     navLayout->addWidget(createNavButton(QStringLiteral("实时概览"), 0));
-    navLayout->addWidget(createNavButton(QStringLiteral("参数设定"), 1,
-                                         QStringLiteral("全部参数")));
+    navLayout->addWidget(createNavButton(QStringLiteral("参数设定"), 1));
     navLayout->addWidget(createNavButton(QStringLiteral("实时示波器"), 2));
     navLayout->addWidget(createNavButton(QStringLiteral("驱动器信息"), 4));
     navLayout->addSpacing(12);
@@ -722,21 +811,15 @@ void MainWindow::createInterface()
     navLayout->addWidget(createNavButton(QStringLiteral("限定"), 7));
     navLayout->addWidget(createNavButton(QStringLiteral("再生电阻"), 8));
     navLayout->addWidget(createNavButton(QStringLiteral("数字 I/O"), 11));
-    navLayout->addWidget(createNavButton(QStringLiteral("控制与标定"), 1,
-                                         QStringLiteral("控制与标定")));
     navLayout->addWidget(createNavButton(QStringLiteral("电流环"), 13));
     navLayout->addWidget(createNavButton(QStringLiteral("速度环"), 14));
     navLayout->addWidget(createNavButton(QStringLiteral("位置环"), 15));
     navLayout->addWidget(createNavButton(QStringLiteral("驱动模式"), 16));
-    navLayout->addWidget(createNavButton(QStringLiteral("参数复位"), 1,
-                                         QStringLiteral("系统"),
-                                         QStringLiteral("参数复位与系统功能")));
-    navLayout->addWidget(createNavButton(QStringLiteral("系统"), 1,
-                                         QStringLiteral("系统")));
+    navLayout->addWidget(createNavButton(QStringLiteral("参数复位"), 18));
     navLayout->addWidget(createNavButton(QStringLiteral("回零"), 9));
-    navLayout->addWidget(createNavButton(QStringLiteral("备份与恢复"), 1,
-                                         QStringLiteral("全部参数"),
-                                         QStringLiteral("参数备份与恢复")));
+    navLayout->addWidget(createNavButton(QStringLiteral("备份与恢复"), 17));
+    navLayout->addWidget(createNavButton(QStringLiteral("配置"), 19));
+    navLayout->addWidget(createNavButton(QStringLiteral("关于"), 20));
     navLayout->addWidget(createNavButton(QStringLiteral("使能与故障"), 10));
     navLayout->addStretch();
 
@@ -758,75 +841,80 @@ void MainWindow::createInterface()
 
     auto *topBar = new QFrame(workspace);
     topBar->setObjectName(QStringLiteral("topBar"));
-    topBar->setFixedHeight(58);
+    topBar->setFixedHeight(44);
     auto *topLayout = new QHBoxLayout(topBar);
     topLayout->setContentsMargins(28, 0, 28, 0);
-    m_pageTitle = new QLabel(QStringLiteral("实时设备概览"), topBar);
-    m_pageTitle->setObjectName(QStringLiteral("topTitle"));
     m_topEnableLabel = new QLabel(QStringLiteral("DISABLED"), topBar);
-    m_topEnableLabel->setObjectName(QStringLiteral("ribbonChip"));
+    m_topEnableLabel->setObjectName(QStringLiteral("topStatusChip"));
     m_topEnableLabel->setProperty("state", QStringLiteral("warning"));
     m_topFaultLabel = new QLabel(QStringLiteral("NO FLT"), topBar);
-    m_topFaultLabel->setObjectName(QStringLiteral("ribbonChip"));
+    m_topFaultLabel->setObjectName(QStringLiteral("topStatusChip"));
     m_topFaultLabel->setProperty("state", QStringLiteral("online"));
     m_topModeLabel = new QLabel(QStringLiteral("驱动模式 · SAFE"), topBar);
-    m_topModeLabel->setObjectName(QStringLiteral("ribbonChip"));
-    m_topMonitorCombo = new QComboBox(topBar);
-    m_topMonitorCombo->setObjectName(QStringLiteral("monitorCombo"));
-    m_topMonitorCombo->addItem(QStringLiteral("监视 · 力/转矩"), 79);
-    m_topMonitorCombo->addItem(QStringLiteral("监视 · 位移量"), 81);
+    m_topModeLabel->setObjectName(QStringLiteral("topStatusChip"));
     m_topConnectionLabel = new QLabel(QStringLiteral("●  未连接"), topBar);
-    m_topConnectionLabel->setObjectName(QStringLiteral("connectionChip"));
+    m_topConnectionLabel->setObjectName(QStringLiteral("topStatusChip"));
     m_topConnectionLabel->setProperty("state", QStringLiteral("offline"));
-    topLayout->addWidget(m_pageTitle);
-    topLayout->addStretch();
-    topLayout->addWidget(m_topEnableLabel);
-    topLayout->addWidget(m_topFaultLabel);
-    topLayout->addWidget(m_topMonitorCombo);
-    topLayout->addWidget(m_topModeLabel);
     topLayout->addWidget(m_topConnectionLabel);
+    topLayout->addWidget(m_topModeLabel);
+    topLayout->addWidget(m_topFaultLabel);
+    topLayout->addWidget(m_topEnableLabel);
+    topLayout->addStretch();
     workspaceLayout->addWidget(topBar);
 
     auto *liveRibbon = new QFrame(workspace);
     liveRibbon->setObjectName(QStringLiteral("liveRibbon"));
-    liveRibbon->setFixedHeight(66);
+    liveRibbon->setFixedHeight(46);
     auto *liveLayout = new QHBoxLayout(liveRibbon);
-    liveLayout->setContentsMargins(24, 8, 24, 8);
-    liveLayout->setSpacing(8);
+    liveLayout->setContentsMargins(12, 4, 12, 4);
+    liveLayout->setSpacing(0);
     const auto addLiveMetric = [liveRibbon, liveLayout](
                                    const QString &caption,
                                    const QString &unit,
                                    QLabel *&valueLabel) {
         auto *cell = new QWidget(liveRibbon);
         cell->setObjectName(QStringLiteral("liveMetric"));
-        auto *cellLayout = new QVBoxLayout(cell);
-        cellLayout->setContentsMargins(12, 3, 12, 3);
-        cellLayout->setSpacing(0);
+        auto *cellLayout = new QHBoxLayout(cell);
+        cellLayout->setContentsMargins(12, 0, 12, 0);
+        cellLayout->setSpacing(7);
         auto *captionLabel = new QLabel(caption, cell);
         captionLabel->setObjectName(QStringLiteral("liveCaption"));
-        auto *valueRow = new QHBoxLayout;
-        valueRow->setContentsMargins(0, 0, 0, 0);
-        valueRow->setSpacing(4);
         valueLabel = new QLabel(QStringLiteral("--"), cell);
         valueLabel->setObjectName(QStringLiteral("liveValue"));
         auto *unitLabel = new QLabel(unit, cell);
         unitLabel->setObjectName(QStringLiteral("liveUnit"));
-        valueRow->addWidget(valueLabel);
-        valueRow->addWidget(unitLabel, 0, Qt::AlignBottom);
-        valueRow->addStretch();
         cellLayout->addWidget(captionLabel);
-        cellLayout->addLayout(valueRow);
+        cellLayout->addWidget(valueLabel);
+        cellLayout->addWidget(unitLabel, 0, Qt::AlignBottom);
+        cellLayout->addStretch();
         liveLayout->addWidget(cell, 1);
     };
-    addLiveMetric(QStringLiteral("位置"), QStringLiteral("count"), m_livePosition);
-    addLiveMetric(QStringLiteral("多圈"), QStringLiteral("count"), m_liveMultiTurn);
-    addLiveMetric(QStringLiteral("单圈"), QStringLiteral("count"), m_liveSingleTurn);
-    addLiveMetric(QStringLiteral("速度"), QStringLiteral("rpm"), m_liveSpeed);
-    addLiveMetric(QStringLiteral("电流"), QStringLiteral("A"), m_liveCurrent);
+
+    auto *monitorCell = new QWidget(liveRibbon);
+    monitorCell->setObjectName(QStringLiteral("liveMetric"));
+    auto *monitorLayout = new QHBoxLayout(monitorCell);
+    monitorLayout->setContentsMargins(12, 0, 12, 0);
+    monitorLayout->setSpacing(7);
+    auto *monitorCaption = new QLabel(QStringLiteral("参数监视"), monitorCell);
+    monitorCaption->setObjectName(QStringLiteral("liveCaption"));
+    m_liveMonitorValue = new QLabel(QStringLiteral("--"), monitorCell);
+    m_liveMonitorValue->setObjectName(QStringLiteral("liveValue"));
+    m_liveMonitorUnit = new QLabel(QStringLiteral("UU"), monitorCell);
+    m_liveMonitorUnit->setObjectName(QStringLiteral("liveUnit"));
+    monitorLayout->addWidget(monitorCaption);
+    monitorLayout->addWidget(m_liveMonitorValue);
+    monitorLayout->addWidget(m_liveMonitorUnit, 0, Qt::AlignBottom);
+    monitorLayout->addStretch();
+    liveLayout->addWidget(monitorCell, 1);
+
     addLiveMetric(QStringLiteral("母线电压"), QStringLiteral("V"), m_liveVoltage);
-    addLiveMetric(QStringLiteral("力/转矩"), QStringLiteral("raw"), m_liveForce);
-    workspaceLayout->addWidget(liveRibbon);
+    addLiveMetric(QStringLiteral("电流"), QStringLiteral("A"), m_liveCurrent);
+    addLiveMetric(QStringLiteral("速度"), QStringLiteral("rpm"), m_liveSpeed);
+    addLiveMetric(QStringLiteral("单圈位置"), QStringLiteral("count"), m_liveSingleTurn);
+    addLiveMetric(QStringLiteral("多圈位置"), QStringLiteral("count"), m_liveMultiTurn);
+    addLiveMetric(QStringLiteral("位置"), QStringLiteral("count"), m_livePosition);
     workspaceLayout->addWidget(m_stack, 1);
+    workspaceLayout->addWidget(liveRibbon);
     shellLayout->addWidget(workspace, 1);
 
     statusBar()->setSizeGripEnabled(false);
@@ -838,36 +926,24 @@ void MainWindow::createInterface()
     showPage(0);
 }
 
-QPushButton *MainWindow::createNavButton(const QString &text, int pageIndex,
-                                         const QString &group,
-                                         const QString &viewTitle)
+QPushButton *MainWindow::createNavButton(const QString &text, int pageIndex)
 {
     auto *button = new QPushButton(text, this);
     button->setObjectName(QStringLiteral("navButton"));
     button->setCheckable(true);
     button->setCursor(Qt::PointingHandCursor);
     button->setProperty("pageIndex", pageIndex);
-    button->setProperty("group", group);
     button->setMinimumHeight(38);
     m_navGroup->addButton(button);
 
     connect(button, &QPushButton::clicked, this,
-            [this, pageIndex, group, viewTitle]() {
-                if (!group.isEmpty()) {
-                    showParametersForGroup(group);
-                } else {
-                    showPage(pageIndex);
-                }
-                if (!viewTitle.isEmpty()) {
-                    setCurrentPageTitle(viewTitle);
-                }
-            });
+            [this, pageIndex]() { showPage(pageIndex); });
     return button;
 }
 
 void MainWindow::setCurrentPageTitle(const QString &title)
 {
-    m_pageTitle->setText(title);
+    Q_UNUSED(title)
 }
 
 void MainWindow::updateDirtyStatus(int count)
@@ -964,42 +1040,38 @@ void MainWindow::applyStyle()
         }
         QFrame#liveRibbon {
             background: #111827;
-            border-bottom: 1px solid #1F2937;
+            border-top: 1px solid #1F2937;
         }
         QWidget#liveMetric {
-            background: #172235;
-            border: 1px solid #263449;
-            border-radius: 7px;
+            background: transparent;
+            border: none;
+            border-right: 1px solid #263449;
+            border-radius: 0;
         }
         QLabel#liveCaption {
-            color: #94A3B8;
-            font-size: 10px;
+            color: #A8B5C7;
+            font-size: 11px;
             font-weight: 600;
         }
         QLabel#liveValue {
             color: #F8FAFC;
             font-family: "Cascadia Mono", "Consolas";
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 700;
         }
         QLabel#liveUnit {
-            color: #64748B;
-            font-size: 9px;
-            padding-bottom: 3px;
+            color: #8292A8;
+            font-size: 10px;
+            padding-bottom: 2px;
         }
-        QLabel#topTitle {
-            color: #172033;
-            font-size: 18px;
-            font-weight: 700;
-        }
-        QLabel#connectionChip, QLabel#statusPill {
+        QLabel#statusPill {
             padding: 7px 12px;
             border-radius: 14px;
             background: #E2E8F0;
             color: #475569;
             font-weight: 600;
         }
-        QLabel#connectionChip[state="online"], QLabel#statusPill[state="online"] {
+        QLabel#statusPill[state="online"] {
             color: #0F766E;
             background: #CCFBF1;
         }
@@ -1007,36 +1079,32 @@ void MainWindow::applyStyle()
             color: #B45309;
             background: #FEF3C7;
         }
-        QLabel#ribbonChip {
-            padding: 5px 9px;
-            margin-left: 5px;
-            border-radius: 5px;
-            background: #F1F5F9;
-            color: #64748B;
-            font-size: 10px;
-            font-weight: 700;
+        QLabel#topStatusChip {
+            min-height: 28px;
+            max-height: 28px;
+            padding: 0 10px;
+            margin-right: 4px;
+            border: 1px solid #E2E8F0;
+            border-radius: 6px;
+            background: #F8FAFC;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 600;
         }
-        QLabel#ribbonChip[state="online"] {
+        QLabel#topStatusChip[state="online"] {
             color: #0F766E;
             background: #CCFBF1;
+            border-color: #99F6E4;
         }
-        QLabel#ribbonChip[state="warning"] {
+        QLabel#topStatusChip[state="warning"] {
             color: #B45309;
             background: #FEF3C7;
+            border-color: #FDE68A;
         }
-        QLabel#ribbonChip[state="error"] {
+        QLabel#topStatusChip[state="error"] {
             color: #B91C1C;
             background: #FEE2E2;
-        }
-        QComboBox#monitorCombo {
-            min-height: 26px;
-            padding: 1px 8px;
-            color: #475569;
-            background: #F1F5F9;
-            border: 1px solid #E2E8F0;
-            border-radius: 5px;
-            font-size: 10px;
-            font-weight: 600;
+            border-color: #FECACA;
         }
         QLabel#pageHeading {
             color: #111827;
@@ -1079,16 +1147,6 @@ void MainWindow::applyStyle()
         QLabel#metricNote {
             color: #94A3B8;
             font-size: 10px;
-        }
-        QFrame#smallStatCard {
-            background: #FFFFFF;
-            border: 1px solid #E2E8F0;
-            border-radius: 8px;
-        }
-        QLabel#smallStatValue {
-            color: #0F172A;
-            font-size: 20px;
-            font-weight: 700;
         }
         QLabel#deviceStatusRow {
             color: #334155;
@@ -1192,7 +1250,7 @@ void MainWindow::applyStyle()
             background: #E2E8F0;
             border-color: #E2E8F0;
         }
-        QLineEdit, QComboBox, QPlainTextEdit {
+        QLineEdit, QComboBox, QPlainTextEdit, QDoubleSpinBox {
             background: #FFFFFF;
             color: #172033;
             border: 1px solid #CBD5E1;
@@ -1200,17 +1258,30 @@ void MainWindow::applyStyle()
             padding: 6px 9px;
             selection-background-color: #0F766E;
         }
-        QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
+        QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus {
             border: 1px solid #0F766E;
         }
-        QTableView#parameterTable {
+        QTabWidget#monitorTabs::pane {
             background: #FFFFFF;
-            alternate-background-color: #F8FAFC;
             border: 1px solid #E2E8F0;
-            border-radius: 9px;
-            gridline-color: #EEF2F7;
-            selection-background-color: #DDF7F1;
-            selection-color: #0F172A;
+            border-radius: 7px;
+            top: -1px;
+        }
+        QTabWidget#monitorTabs QTabBar::tab {
+            min-width: 82px;
+            min-height: 26px;
+            padding: 2px 12px;
+            color: #64748B;
+            background: #F1F5F9;
+            border: 1px solid #E2E8F0;
+            border-bottom: none;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+        }
+        QTabWidget#monitorTabs QTabBar::tab:selected {
+            color: #0F766E;
+            background: #FFFFFF;
+            font-weight: 700;
         }
         QTableWidget#compactParameterTable {
             background: #FFFFFF;
@@ -1222,7 +1293,7 @@ void MainWindow::applyStyle()
             selection-color: #0F172A;
         }
         QTableWidget#compactParameterTable::item {
-            padding: 3px 6px;
+            padding: 2px;
         }
         QTableWidget#faultTable {
             background: #FFFFFF;
@@ -1253,10 +1324,12 @@ void MainWindow::applyStyle()
             padding: 9px;
             font-weight: 700;
         }
-        QTableView QLineEdit {
+        QTableView QLineEdit,
+        QTableWidget QLineEdit {
             border: none;
             border-radius: 0;
             background: #FFF7D6;
+            padding: 1px 4px;
         }
         QProgressBar {
             background: #E2E8F0;

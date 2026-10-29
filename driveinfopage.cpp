@@ -3,10 +3,12 @@
 #include "parametercatalog.h"
 
 #include <QFrame>
+#include <QComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QMessageBox>
 #include <QVBoxLayout>
 
 namespace {
@@ -85,6 +87,34 @@ DriveInfoPage::DriveInfoPage(QWidget *parent)
     addInfoRow(identityGrid, 2, QStringLiteral("参数缓存"), m_parameterCount, identityPanel);
     identityLayout->addLayout(identityGrid);
 
+    auto *ratedRow = new QHBoxLayout;
+    auto *ratedCaption = new QLabel(QStringLiteral("输入电压/电流规格"), identityPanel);
+    ratedCaption->setObjectName(QStringLiteral("infoCaption"));
+    m_ratedSpec = new QComboBox(identityPanel);
+    const QList<QPair<QString, quint16>> ratedSpecs {
+        {QStringLiteral("220V/5A"), 2205},
+        {QStringLiteral("220V/20A"), 2220},
+        {QStringLiteral("220V/30A"), 2230},
+        {QStringLiteral("220V/50A"), 2250},
+        {QStringLiteral("48V/20A"), 4820},
+        {QStringLiteral("48V/30A"), 4830},
+        {QStringLiteral("48V/50A"), 4850},
+        {QStringLiteral("48V/100A"), 4899},
+        {QStringLiteral("24V/20A"), 2420},
+        {QStringLiteral("24V/30A"), 2430},
+        {QStringLiteral("24V/50A"), 2450},
+        {QStringLiteral("24V/100A"), 2499},
+    };
+    for (const auto &spec : ratedSpecs) {
+        m_ratedSpec->addItem(spec.first, spec.second);
+    }
+    m_applyRatedSpec = new QPushButton(QStringLiteral("写入 Pn021"), identityPanel);
+    m_applyRatedSpec->setObjectName(QStringLiteral("secondaryButton"));
+    ratedRow->addWidget(ratedCaption);
+    ratedRow->addWidget(m_ratedSpec, 1);
+    ratedRow->addWidget(m_applyRatedSpec);
+    identityLayout->addLayout(ratedRow);
+
     auto *architecture = new QLabel(
         QStringLiteral("通信架构\n串口 115200 · 8N1 · 8 字节定长帧\n"
                        "握手 55 55 B9 9B 9B B9 AA AA\n"
@@ -127,6 +157,23 @@ DriveInfoPage::DriveInfoPage(QWidget *parent)
     root->addLayout(contentRow, 1);
 
     connect(readButton, &QPushButton::clicked, this, &DriveInfoPage::readAllRequested);
+    connect(m_applyRatedSpec, &QPushButton::clicked, this, [this]() {
+        if (!m_connected) {
+            QMessageBox::information(this, QStringLiteral("驱动器规格"),
+                                     QStringLiteral("请先连接设备"));
+            return;
+        }
+        if (QMessageBox::question(
+                this, QStringLiteral("写入驱动器规格"),
+                QStringLiteral("将写入 Pn021=%1（%2）。"
+                               "错误的电压/电流规格会影响过压、过载和保护判断，是否继续？")
+                    .arg(m_ratedSpec->currentData().toInt())
+                    .arg(m_ratedSpec->currentText()))
+            == QMessageBox::Yes) {
+            emit parameterWriteRequested(
+                21, static_cast<quint16>(m_ratedSpec->currentData().toInt()));
+        }
+    });
     setConnected(false, QString());
 }
 
@@ -134,6 +181,8 @@ void DriveInfoPage::setConnected(bool connected, const QString &portName)
 {
     m_connected = connected;
     m_connection->setText(connected ? portName : QStringLiteral("未连接"));
+    m_ratedSpec->setEnabled(connected);
+    m_applyRatedSpec->setEnabled(connected);
 }
 
 void DriveInfoPage::updateTelemetry(const DeviceSerialService::Telemetry &telemetry)
@@ -151,6 +200,12 @@ void DriveInfoPage::updateTelemetry(const DeviceSerialService::Telemetry &teleme
 void DriveInfoPage::setParameterValue(quint16 parameter, quint16 value)
 {
     m_parameters.insert(parameter, value);
+    if (parameter == 21) {
+        const int index = m_ratedSpec->findData(value);
+        if (index >= 0) {
+            m_ratedSpec->setCurrentIndex(index);
+        }
+    }
     refreshSummary();
 }
 

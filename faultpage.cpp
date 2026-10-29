@@ -1,5 +1,6 @@
 #include "faultpage.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QFrame>
 #include <QGridLayout>
@@ -7,7 +8,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QPixmap>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QXmlStreamReader>
@@ -41,6 +45,12 @@ FaultPage::FaultPage(QWidget *parent)
     headingRow->addWidget(resetButton);
     root->addLayout(headingRow);
 
+    m_tabs = new QTabWidget(this);
+    auto *statusTab = new QWidget(m_tabs);
+    auto *statusPageLayout = new QVBoxLayout(statusTab);
+    statusPageLayout->setContentsMargins(8, 10, 8, 8);
+    statusPageLayout->setSpacing(10);
+
     auto *statusPanel = new QFrame(this);
     statusPanel->setObjectName(QStringLiteral("panel"));
     auto *statusLayout = new QGridLayout(statusPanel);
@@ -66,7 +76,39 @@ FaultPage::FaultPage(QWidget *parent)
     statusLayout->addWidget(motorCaption, 0, 2);
     statusLayout->addWidget(m_motorState, 1, 2);
     statusLayout->setColumnStretch(1, 1);
-    root->addWidget(statusPanel);
+    statusPageLayout->addWidget(statusPanel);
+
+    auto *logicRow = new QHBoxLayout;
+    const auto addLogicImage = [this, logicRow](
+                                   const QString &resource,
+                                   const QString &caption) {
+        auto *block = new QWidget(this);
+        auto *layout = new QVBoxLayout(block);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto *image = new QLabel(block);
+        image->setPixmap(QPixmap(resource).scaled(
+            280, 105, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        image->setAlignment(Qt::AlignCenter);
+        auto *label = new QLabel(caption, block);
+        label->setObjectName(QStringLiteral("mutedText"));
+        label->setAlignment(Qt::AlignCenter);
+        layout->addWidget(image);
+        layout->addWidget(label);
+        logicRow->addWidget(block);
+    };
+    addLogicImage(QStringLiteral(":/reference/images/enable_and.png"),
+                  QStringLiteral("伺服使能条件逻辑"));
+    addLogicImage(QStringLiteral(":/reference/images/enable_and1.png"),
+                  QStringLiteral("安全与报警联锁逻辑"));
+    logicRow->addStretch();
+    statusPageLayout->addLayout(logicRow);
+    statusPageLayout->addStretch();
+    m_tabs->addTab(statusTab, QStringLiteral("当前报警"));
+
+    auto *dictionaryTab = new QWidget(m_tabs);
+    auto *dictionaryLayout = new QVBoxLayout(dictionaryTab);
+    dictionaryLayout->setContentsMargins(8, 10, 8, 8);
+    dictionaryLayout->setSpacing(8);
 
     auto *filterRow = new QHBoxLayout;
     m_search = new QLineEdit(this);
@@ -76,7 +118,7 @@ FaultPage::FaultPage(QWidget *parent)
     m_resultCount->setObjectName(QStringLiteral("mutedText"));
     filterRow->addWidget(m_search, 1);
     filterRow->addWidget(m_resultCount);
-    root->addLayout(filterRow);
+    dictionaryLayout->addLayout(filterRow);
 
     m_table = new QTableWidget(this);
     m_table->setObjectName(QStringLiteral("faultTable"));
@@ -91,7 +133,20 @@ FaultPage::FaultPage(QWidget *parent)
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
-    root->addWidget(m_table, 1);
+    dictionaryLayout->addWidget(m_table, 1);
+    m_tabs->addTab(dictionaryTab, QStringLiteral("报警/警告字典"));
+
+    auto *historyTab = new QWidget(m_tabs);
+    auto *historyLayout = new QVBoxLayout(historyTab);
+    historyLayout->setContentsMargins(8, 10, 8, 8);
+    m_history = new QPlainTextEdit(historyTab);
+    m_history->setReadOnly(true);
+    m_history->setPlaceholderText(
+        QStringLiteral("设备故障码变化、通信错误和报警复位操作记录在这里。"));
+    m_history->setMaximumBlockCount(2000);
+    historyLayout->addWidget(m_history);
+    m_tabs->addTab(historyTab, QStringLiteral("报警历史"));
+    root->addWidget(m_tabs, 1);
 
     connect(enableButton, &QPushButton::clicked, this, &FaultPage::enableRequested);
     connect(disableButton, &QPushButton::clicked, this, &FaultPage::disableRequested);
@@ -118,6 +173,17 @@ void FaultPage::setMotorEnabled(bool enabled)
 
 void FaultPage::setFaultCode(quint32 faultCode)
 {
+    if (!m_hasFaultCode || faultCode != m_lastFaultCode) {
+        m_history->appendPlainText(
+            QStringLiteral("[%1] 当前故障码变化：%2")
+                .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")))
+                .arg(faultCode == 0
+                         ? QStringLiteral("清除")
+                         : QStringLiteral("0x%1")
+                               .arg(faultCode, 8, 16, QLatin1Char('0')).toUpper()));
+        m_lastFaultCode = faultCode;
+        m_hasFaultCode = true;
+    }
     m_faultCode->setText(faultCode == 0
                              ? QStringLiteral("无故障")
                              : QStringLiteral("0x%1")
@@ -128,6 +194,14 @@ void FaultPage::setFaultCode(quint32 faultCode)
         m_faultDescription->setText(
             QStringLiteral("设备上报故障码，请根据下方代码表检查接线、参数与现场状态"));
     }
+}
+
+void FaultPage::appendHistory(const QString &message)
+{
+    m_history->appendPlainText(
+        QStringLiteral("[%1] %2")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                 message));
 }
 
 void FaultPage::filterCodes(const QString &text)

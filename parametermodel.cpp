@@ -3,6 +3,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QFile>
+#include <QRegularExpression>
 #include <QTextStream>
 
 #include <cmath>
@@ -12,12 +13,11 @@ ParameterModel::ParameterModel(QObject *parent)
     , m_definitions(ParameterCatalog::all().toVector())
     , m_entries(200)
 {
-    rebuildVisibleRows();
 }
 
 int ParameterModel::rowCount(const QModelIndex &parent) const
 {
-    return parent.isValid() ? 0 : m_visibleIndices.size();
+    return parent.isValid() ? 0 : m_definitions.size();
 }
 
 int ParameterModel::columnCount(const QModelIndex &parent) const
@@ -27,11 +27,11 @@ int ParameterModel::columnCount(const QModelIndex &parent) const
 
 QVariant ParameterModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_visibleIndices.size()) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_definitions.size()) {
         return {};
     }
 
-    const int parameterIndex = m_visibleIndices.at(index.row());
+    const int parameterIndex = index.row();
     const ParameterDefinition &definition = m_definitions.at(parameterIndex);
     const Entry &entry = m_entries.at(parameterIndex);
 
@@ -125,7 +125,7 @@ bool ParameterModel::setData(const QModelIndex &index, const QVariant &value, in
         return false;
     }
 
-    const int parameterIndex = m_visibleIndices.at(index.row());
+    const int parameterIndex = index.row();
     const ParameterDefinition &definition = m_definitions.at(parameterIndex);
     quint16 rawValue = 0;
 
@@ -141,32 +141,16 @@ bool ParameterModel::setData(const QModelIndex &index, const QVariant &value, in
     }
 
     Entry &entry = m_entries[parameterIndex];
+    const quint16 previousValue = entry.value;
     entry.value = rawValue;
     entry.dirty = !entry.confirmed || entry.value != entry.remoteValue;
     emit dataChanged(this->index(index.row(), 0),
                      this->index(index.row(), ColumnCount - 1));
     emit dirtyStateChanged(dirtyCount());
+    if (previousValue != rawValue) {
+        emit parameterEdited(definition.index, rawValue);
+    }
     return true;
-}
-
-void ParameterModel::setGroupFilter(const QString &group)
-{
-    const QString normalized = group.isEmpty() ? QStringLiteral("全部参数") : group;
-    if (normalized == m_groupFilter) {
-        return;
-    }
-    m_groupFilter = normalized;
-    rebuildVisibleRows();
-    emit groupFilterChanged(m_groupFilter);
-}
-
-void ParameterModel::setTextFilter(const QString &text)
-{
-    if (m_textFilter == text) {
-        return;
-    }
-    m_textFilter = text.trimmed();
-    rebuildVisibleRows();
 }
 
 void ParameterModel::setRemoteValue(quint16 parameter, quint16 rawValue)
@@ -180,10 +164,7 @@ void ParameterModel::setRemoteValue(quint16 parameter, quint16 rawValue)
     entry.confirmed = true;
     entry.dirty = false;
 
-    const int row = rowForParameter(parameter);
-    if (row >= 0) {
-        emit dataChanged(index(row, 0), index(row, ColumnCount - 1));
-    }
+    emit dataChanged(index(parameter, 0), index(parameter, ColumnCount - 1));
     emit dirtyStateChanged(dirtyCount());
 }
 
@@ -197,10 +178,7 @@ void ParameterModel::markWritten(quint16 parameter)
     entry.confirmed = true;
     entry.dirty = false;
 
-    const int row = rowForParameter(parameter);
-    if (row >= 0) {
-        emit dataChanged(index(row, 0), index(row, ColumnCount - 1));
-    }
+    emit dataChanged(index(parameter, 0), index(parameter, ColumnCount - 1));
     emit dirtyStateChanged(dirtyCount());
 }
 
@@ -359,6 +337,78 @@ bool ParameterModel::importCsv(const QString &fileName, QString *error)
     return imported > 0;
 }
 
+bool ParameterModel::exportDriveText(const QString &fileName, QString *error) const
+{
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (error) {
+            *error = file.errorString();
+        }
+        return false;
+    }
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    // The reference application stores the raw 16-bit values, not the
+    // engineering values shown in the editor. Keep this format lossless.
+    for (const ParameterDefinition &definition : m_definitions) {
+        const Entry &entry = m_entries.at(definition.index);
+        stream << QStringLiteral("Pn%1 %2\n")
+                      .arg(definition.index, 3, 10, QLatin1Char('0'))
+                      .arg(entry.value);
+    }
+    return true;
+}
+
+bool ParameterModel::importDriveText(const QString &fileName, QString *error)
+{
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) {
+            *error = file.errorString();
+        }
+        return false;
+    }
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    int imported = 0;
+    int invalid = 0;
+    while (!stream.atEnd()) {
+        const QString line = stream.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+            continue;
+        }
+        const QStringList fields = line.split(QRegularExpression(QStringLiteral("\\s+")),
+                                              Qt::SkipEmptyParts);
+        if (fields.size() < 2 || !fields.first().startsWith(QStringLiteral("Pn"),
+                                                            Qt::CaseInsensitive)) {
+            ++invalid;
+            continue;
+        }
+        bool parameterOk = false;
+        bool valueOk = false;
+        const int parameter = fields.at(0).mid(2).toInt(&parameterOk);
+        const uint rawValue = fields.at(1).toUInt(&valueOk);
+        if (!parameterOk || !valueOk || parameter < 0
+            || parameter >= m_entries.size() || rawValue > 65535) {
+            ++invalid;
+            continue;
+        }
+
+        Entry &entry = m_entries[parameter];
+        entry.value = static_cast<quint16>(rawValue);
+        entry.dirty = !entry.confirmed || entry.value != entry.remoteValue;
+        ++imported;
+    }
+    emit dataChanged(index(0, 0), index(qMax(0, rowCount() - 1), ColumnCount - 1));
+    emit dirtyStateChanged(dirtyCount());
+    if (imported == 0 && error) {
+        *error = invalid > 0
+            ? QStringLiteral("文件中没有有效的参数行；应为“PnNNN 原始值”，范围 0–65535")
+            : QStringLiteral("文件中没有可识别的“PnNNN 原始值”参数行");
+    }
+    return imported > 0;
+}
+
 void ParameterModel::restoreRemoteValues()
 {
     beginResetModel();
@@ -370,41 +420,10 @@ void ParameterModel::restoreRemoteValues()
     emit dirtyStateChanged(0);
 }
 
-void ParameterModel::rebuildVisibleRows()
-{
-    beginResetModel();
-    m_visibleIndices.clear();
-    for (const ParameterDefinition &definition : m_definitions) {
-        if (matchesFilter(definition)) {
-            m_visibleIndices.append(definition.index);
-        }
-    }
-    endResetModel();
-}
-
-int ParameterModel::rowForParameter(quint16 parameter) const
-{
-    return m_visibleIndices.indexOf(parameter);
-}
-
 QString ParameterModel::stateText(const Entry &entry) const
 {
     if (entry.dirty) {
         return QStringLiteral("待写入");
     }
     return entry.confirmed ? QStringLiteral("已同步") : QStringLiteral("未读取");
-}
-
-bool ParameterModel::matchesFilter(const ParameterDefinition &definition) const
-{
-    if (m_groupFilter != QStringLiteral("全部参数") && definition.group != m_groupFilter) {
-        return false;
-    }
-    if (m_textFilter.isEmpty()) {
-        return true;
-    }
-    const QString haystack = QStringLiteral("Pn%1 %2 %3 %4")
-        .arg(definition.index, 3, 10, QLatin1Char('0'))
-        .arg(definition.name, definition.group, definition.unit);
-    return haystack.contains(m_textFilter, Qt::CaseInsensitive);
 }

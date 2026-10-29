@@ -31,10 +31,16 @@ public:
     };
 
     struct Telemetry {
-        double force = 0.0;
+        double parameterMonitor = 0.0;
         double current = 0.0;
+        double currentCommand = 0.0;
+        double scopeCurrent = 0.0;
         double speed = 0.0;
+        double speedCommand = 0.0;
+        double scopeSpeed = 0.0;
         double position = 0.0;
+        double positionCommand = 0.0;
+        double positionError = 0.0;
         double multiTurnPosition = 0.0;
         double singleTurnPosition = 0.0;
         double busVoltage = 0.0;
@@ -43,6 +49,8 @@ public:
         bool motorEnabled = false;
         bool statusKnown = false;
         bool valid = false;
+        quint8 updatedType = 0;
+        double timestampMs = 0.0;
         QDateTime timestamp;
     };
 
@@ -84,7 +92,8 @@ private slots:
 private:
     bool writeFrame(const QByteArray &frame);
     void parseBuffer();
-    void applyTelemetryByte(quint8 type, quint32 rawValue);
+    void applyTelemetryByte(quint8 type, quint32 rawValue,
+                            const QDateTime &frameTimestamp);
     static QByteArray parameterFrame(quint16 parameter, quint16 value);
     static QByteArray frameFromHex(const QString &hex);
 
@@ -97,6 +106,7 @@ private:
     QString m_lastError;
     bool m_readingParameters = false;
     int m_readParameterCount = 0;
+    double m_frameTimestampCursorMs = 0.0;
 };
 
 Q_DECLARE_METATYPE(DeviceSerialService::Telemetry)

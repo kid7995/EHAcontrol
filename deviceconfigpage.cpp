@@ -7,6 +7,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStyle>
@@ -47,6 +48,7 @@ DeviceConfigPage::DeviceConfigPage(const QString &title, const QString &introduc
     auto *content = new QWidget(scroll);
     content->setObjectName(QStringLiteral("settingsContent"));
     auto *grid = new QGridLayout(content);
+    m_grid = grid;
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setHorizontalSpacing(18);
     grid->setVerticalSpacing(12);
@@ -107,6 +109,7 @@ DeviceConfigPage::DeviceConfigPage(const QString &title, const QString &introduc
         m_fields.append(field);
     }
     grid->setRowStretch(row, 1);
+    m_nextRow = row;
     scroll->setWidget(content);
     root->addWidget(scroll, 1);
 
@@ -123,6 +126,24 @@ DeviceConfigPage::DeviceConfigPage(const QString &title, const QString &introduc
     connect(m_restoreButton, &QPushButton::clicked,
             this, &DeviceConfigPage::restoreLoadedValues);
     setConnected(false);
+}
+
+void DeviceConfigPage::addIllustration(const QString &resourcePath, const QString &caption)
+{
+    if (!m_grid) {
+        return;
+    }
+    auto *image = new QLabel(m_grid->parentWidget());
+    const QPixmap pixmap(resourcePath);
+    image->setPixmap(pixmap.scaled(720, 300, Qt::KeepAspectRatio,
+                                   Qt::SmoothTransformation));
+    image->setAlignment(Qt::AlignCenter);
+    image->setObjectName(QStringLiteral("referenceIllustration"));
+    auto *captionLabel = new QLabel(caption, m_grid->parentWidget());
+    captionLabel->setObjectName(QStringLiteral("fieldHint"));
+    captionLabel->setWordWrap(true);
+    m_grid->addWidget(image, m_nextRow++, 0, 1, 2);
+    m_grid->addWidget(captionLabel, m_nextRow++, 0, 1, 2);
 }
 
 void DeviceConfigPage::setConnected(bool connected)

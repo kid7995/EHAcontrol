@@ -4,14 +4,9 @@
 #include <QWidget>
 
 class ParameterModel;
-class QComboBox;
-class QLabel;
-class QLineEdit;
-class QProgressBar;
 class QPushButton;
-class QStackedWidget;
-class QTableView;
 class QTableWidget;
+class QTableWidgetItem;
 
 class ParameterPage : public QWidget
 {
@@ -20,45 +15,35 @@ class ParameterPage : public QWidget
 public:
     explicit ParameterPage(ParameterModel *model, QWidget *parent = nullptr);
 
-    void selectGroup(const QString &group);
-
 public slots:
     void setConnected(bool connected);
     void setReadProgress(int received, int total);
     void setReadFinished(bool complete, int received);
-    void updateCounts();
 
 signals:
     void readAllRequested();
-    void writeDirtyRequested();
-    void writeAndSaveRequested();
+    void parameterWriteRequested(quint16 parameter, quint16 rawValue);
     void statusMessage(const QString &message);
 
 private slots:
     void chooseExportFile();
     void chooseImportFile();
-    void confirmRestoreRemote();
-    void setCompactMode(bool compact);
+    void gridItemChanged(QTableWidgetItem *item);
 
 private:
-    void refreshCompactGrid();
-    void compactItemChanged(class QTableWidgetItem *item);
+    void updateEditingState();
+    void scheduleGridRefresh();
+    void refreshGrid();
 
     ParameterModel *m_model = nullptr;
-    QLineEdit *m_search = nullptr;
-    QComboBox *m_groupCombo = nullptr;
-    QTableView *m_table = nullptr;
-    QTableWidget *m_compactGrid = nullptr;
-    QStackedWidget *m_views = nullptr;
-    QPushButton *m_compactButton = nullptr;
-    QPushButton *m_detailButton = nullptr;
-    QLabel *m_countLabel = nullptr;
-    QLabel *m_dirtyLabel = nullptr;
-    QProgressBar *m_progress = nullptr;
+    QTableWidget *m_grid = nullptr;
     QPushButton *m_readButton = nullptr;
-    QPushButton *m_writeButton = nullptr;
-    QPushButton *m_writeSaveButton = nullptr;
-    bool m_refreshingCompactGrid = false;
+    QPushButton *m_exportButton = nullptr;
+    QPushButton *m_importButton = nullptr;
+    bool m_connected = false;
+    bool m_reading = false;
+    bool m_refreshingGrid = false;
+    bool m_refreshPending = false;
 };
 
 #endif // PARAMETERPAGE_H

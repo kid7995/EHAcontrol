@@ -6,7 +6,9 @@
 
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QTableWidget;
+class QTabWidget;
 
 class FaultPage : public QWidget
 {
@@ -19,6 +21,7 @@ public slots:
     void setConnected(bool connected);
     void setMotorEnabled(bool enabled);
     void setFaultCode(quint32 faultCode);
+    void appendHistory(const QString &message);
 
 signals:
     void enableRequested();
@@ -45,6 +48,10 @@ private:
     QLabel *m_faultDescription = nullptr;
     QLabel *m_motorState = nullptr;
     QLabel *m_resultCount = nullptr;
+    QTabWidget *m_tabs = nullptr;
+    QPlainTextEdit *m_history = nullptr;
+    quint32 m_lastFaultCode = 0;
+    bool m_hasFaultCode = false;
 };
 
 #endif // FAULTPAGE_H

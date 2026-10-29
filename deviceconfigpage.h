@@ -6,6 +6,7 @@
 
 class QComboBox;
 class QDoubleSpinBox;
+class QGridLayout;
 class QLabel;
 class QPushButton;
 
@@ -29,6 +30,7 @@ public:
                      const QVector<Field> &fields, QWidget *parent = nullptr);
 
     void setConnected(bool connected);
+    void addIllustration(const QString &resourcePath, const QString &caption);
 
 public slots:
     void setParameterValue(quint16 parameter, quint16 value);
@@ -58,6 +60,8 @@ private:
     QPushButton *m_writeButton = nullptr;
     QPushButton *m_restoreButton = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QGridLayout *m_grid = nullptr;
+    int m_nextRow = 0;
     bool m_connected = false;
 };
 

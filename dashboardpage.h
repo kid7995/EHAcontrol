@@ -48,7 +48,7 @@ private:
     MetricWidgets m_speed;
     MetricWidgets m_current;
     MetricWidgets m_busVoltage;
-    MetricWidgets m_force;
+    MetricWidgets m_parameterMonitor;
     MetricWidgets m_state;
     QLabel *m_connectionLabel = nullptr;
     QLabel *m_motorLabel = nullptr;

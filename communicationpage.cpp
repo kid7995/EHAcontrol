@@ -11,6 +11,7 @@
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QStyle>
+#include <QTimer>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -28,6 +29,14 @@ QLabel *sectionTitle(const QString &text, QWidget *parent)
     auto *label = new QLabel(text, parent);
     label->setObjectName(QStringLiteral("sectionTitle"));
     return label;
+}
+
+QString formatTrafficRate(double bytesPerSecond)
+{
+    if (bytesPerSecond >= 1024.0) {
+        return QStringLiteral("%1 KB/s").arg(bytesPerSecond / 1024.0, 0, 'f', 1);
+    }
+    return QStringLiteral("%1 B/s").arg(qRound64(bytesPerSecond));
 }
 
 } // namespace
@@ -144,6 +153,9 @@ CommunicationPage::CommunicationPage(QWidget *parent)
     auto *logHeader = new QHBoxLayout;
     logHeader->addWidget(sectionTitle(QStringLiteral("原始通信日志"), logPanel));
     logHeader->addStretch();
+    m_trafficRateLabel = new QLabel(QStringLiteral("RX 0 B/s  ·  TX 0 B/s"), logPanel);
+    m_trafficRateLabel->setObjectName(QStringLiteral("infoValue"));
+    logHeader->addWidget(m_trafficRateLabel);
     auto *clearButton = new QPushButton(QStringLiteral("清空日志"), logPanel);
     clearButton->setObjectName(QStringLiteral("ghostButton"));
     logHeader->addWidget(clearButton);
@@ -186,6 +198,13 @@ CommunicationPage::CommunicationPage(QWidget *parent)
     connect(clearButton, &QPushButton::clicked,
             this, &CommunicationPage::clearLog);
 
+    m_rateTimer = new QTimer(this);
+    m_rateTimer->setInterval(500);
+    connect(m_rateTimer, &QTimer::timeout,
+            this, &CommunicationPage::updateTrafficRate);
+    m_rateWindowStartMs = QDateTime::currentMSecsSinceEpoch();
+    m_rateTimer->start();
+
     refreshPorts();
     setConnected(false, QString());
 }
@@ -213,6 +232,16 @@ void CommunicationPage::setConnected(bool connected, const QString &portName)
         button->setEnabled(connected);
     }
     m_rawInput->setEnabled(connected);
+    if (!connected) {
+        m_pendingReceiveLog.clear();
+        m_windowRxBytes = 0;
+        m_windowTxBytes = 0;
+        m_rxBytesPerSecond = 0.0;
+        m_txBytesPerSecond = 0.0;
+        m_rateWindowStartMs = QDateTime::currentMSecsSinceEpoch();
+        m_trafficRateLabel->setText(
+            QStringLiteral("RX 0 B/s  ·  TX 0 B/s"));
+    }
 
     m_connectButton->style()->unpolish(m_connectButton);
     m_connectButton->style()->polish(m_connectButton);
@@ -225,9 +254,44 @@ void CommunicationPage::logFrame(bool transmitted, const QByteArray &frame)
     const QString timestamp =
         QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
     const QString prefix = transmitted ? QStringLiteral("TX") : QStringLiteral("RX");
-    m_log->appendPlainText(
-        QStringLiteral("[%1] %2  %3").arg(timestamp, prefix,
-                                          QString::fromLatin1(frame.toHex(' ').toUpper())));
+    if (transmitted) {
+        m_windowTxBytes += frame.size();
+    } else {
+        m_windowRxBytes += frame.size();
+    }
+
+    if (!isVisible()) {
+        m_pendingReceiveLog.clear();
+        return;
+    }
+
+    if (!transmitted) {
+        m_pendingReceiveLog.append(frame);
+    }
+
+    QStringList lines;
+    const auto appendFrames = [&lines, &timestamp, &prefix](const QByteArray &bytes) {
+        for (int offset = 0; offset < bytes.size(); offset += 8) {
+            const QByteArray packet = bytes.mid(offset, 8);
+            lines.append(
+                QStringLiteral("[%1] %2  %3")
+                    .arg(timestamp, prefix,
+                         QString::fromLatin1(packet.toHex(' ').toUpper())));
+        }
+    };
+
+    if (transmitted) {
+        appendFrames(frame);
+    } else {
+        while (m_pendingReceiveLog.size() >= 8) {
+            appendFrames(m_pendingReceiveLog.left(8));
+            m_pendingReceiveLog.remove(0, 8);
+        }
+    }
+
+    if (!lines.isEmpty()) {
+        m_log->appendPlainText(lines.join(QLatin1Char('\n')));
+    }
 }
 
 void CommunicationPage::logMessage(const QString &message)
@@ -294,4 +358,27 @@ void CommunicationPage::sendRawCommand()
 void CommunicationPage::clearLog()
 {
     m_log->clear();
+}
+
+void CommunicationPage::updateTrafficRate()
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 elapsedMs = nowMs - m_rateWindowStartMs;
+    if (elapsedMs <= 0) {
+        return;
+    }
+
+    const double seconds = elapsedMs / 1000.0;
+    const double instantRx = m_windowRxBytes / seconds;
+    const double instantTx = m_windowTxBytes / seconds;
+    m_rxBytesPerSecond = m_rxBytesPerSecond * 0.55 + instantRx * 0.45;
+    m_txBytesPerSecond = m_txBytesPerSecond * 0.55 + instantTx * 0.45;
+    m_windowRxBytes = 0;
+    m_windowTxBytes = 0;
+    m_rateWindowStartMs = nowMs;
+
+    m_trafficRateLabel->setText(
+        QStringLiteral("RX %1  ·  TX %2")
+            .arg(formatTrafficRate(m_rxBytesPerSecond),
+                 formatTrafficRate(m_txBytesPerSecond)));
 }

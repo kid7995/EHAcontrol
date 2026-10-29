@@ -68,8 +68,8 @@ DashboardPage::DashboardPage(QWidget *parent)
                           QStringLiteral("#0891B2"));
     m_busVoltage = addMetric(metricsGrid, 1, 1, QStringLiteral("母线电压"), QStringLiteral("V"),
                              QStringLiteral("#4F46E5"));
-    m_force = addMetric(metricsGrid, 1, 2, QStringLiteral("力/转矩反馈"), QStringLiteral("raw"),
-                        QStringLiteral("#DC2626"));
+    m_parameterMonitor = addMetric(metricsGrid, 1, 2, QStringLiteral("参数监视"),
+                                   QStringLiteral("UU"), QStringLiteral("#DC2626"));
     m_state = addMetric(metricsGrid, 1, 3, QStringLiteral("设备状态"), QString(),
                         QStringLiteral("#475569"));
     root->addLayout(metricsGrid);
@@ -207,7 +207,7 @@ void DashboardPage::updateTelemetry(const DeviceSerialService::Telemetry &teleme
     setMetric(m_speed, telemetry.speed, 1);
     setMetric(m_current, telemetry.current, 2);
     setMetric(m_busVoltage, telemetry.busVoltage, 2);
-    setMetric(m_force, telemetry.force);
+    setMetric(m_parameterMonitor, telemetry.parameterMonitor);
 
     m_position.note->setText(QStringLiteral("反馈帧 0x0C"));
     m_multiTurn.note->setText(QStringLiteral("反馈帧 0x0A"));
@@ -215,7 +215,7 @@ void DashboardPage::updateTelemetry(const DeviceSerialService::Telemetry &teleme
     m_speed.note->setText(QStringLiteral("反馈帧 0x09"));
     m_current.note->setText(QStringLiteral("反馈帧 0x08 · 原始值 × 0.01"));
     m_busVoltage.note->setText(QStringLiteral("反馈帧 0x1A"));
-    m_force.note->setText(QStringLiteral("反馈帧 0x07"));
+    m_parameterMonitor.note->setText(QStringLiteral("参数监视帧 0x07"));
     m_state.note->setText(telemetry.valid ? QStringLiteral("数据帧有效") : QStringLiteral("等待数据"));
 
     if (telemetry.timestamp.isValid()) {

@@ -7,6 +7,8 @@
 #include <QWidget>
 
 class QLabel;
+class QComboBox;
+class QPushButton;
 
 class DriveInfoPage : public QWidget
 {
@@ -23,6 +25,7 @@ public slots:
 
 signals:
     void readAllRequested();
+    void parameterWriteRequested(quint16 parameter, quint16 value);
 
 private:
     void refreshSummary();
@@ -38,6 +41,8 @@ private:
     QLabel *m_parameterCount = nullptr;
     QLabel *m_lastPosition = nullptr;
     QLabel *m_lastVoltage = nullptr;
+    QComboBox *m_ratedSpec = nullptr;
+    QPushButton *m_applyRatedSpec = nullptr;
     bool m_connected = false;
 };
 

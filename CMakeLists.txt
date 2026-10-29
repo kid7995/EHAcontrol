@@ -14,6 +14,10 @@ set(PROJECT_SOURCES
     main.cpp
     mainwindow.cpp
     mainwindow.h
+    aboutpage.cpp
+    aboutpage.h
+    backuppage.cpp
+    backuppage.h
     deviceserialservice.cpp
     deviceserialservice.h
     parametercatalog.cpp
@@ -24,6 +28,8 @@ set(PROJECT_SOURCES
     dashboardpage.h
     parameterpage.cpp
     parameterpage.h
+    preferencespage.cpp
+    preferencespage.h
     monitorpage.cpp
     monitorpage.h
     communicationpage.cpp
@@ -43,6 +49,8 @@ set(PROJECT_SOURCES
     icon.qrc
     image.qrc
     reference_assets.qrc
+    resetpage.cpp
+    resetpage.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

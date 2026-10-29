@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -206,6 +207,24 @@ FeedbackPage::FeedbackPage(QWidget *parent)
     outputHint->setObjectName(QStringLiteral("fieldHint"));
     outputHint->setWordWrap(true);
     outputLayout->addWidget(outputHint);
+    const auto addOutputDiagram = [outputPage, outputLayout](
+                                      const QString &resource,
+                                      const QString &caption) {
+        auto *image = new QLabel(outputPage);
+        image->setPixmap(QPixmap(resource).scaled(
+            430, 130, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        image->setAlignment(Qt::AlignCenter);
+        auto *captionLabel = new QLabel(caption, outputPage);
+        captionLabel->setObjectName(QStringLiteral("mutedText"));
+        outputLayout->addWidget(image);
+        outputLayout->addWidget(captionLabel);
+    };
+    addOutputDiagram(QStringLiteral(":/reference/images/feedback_ab.png"),
+                     QStringLiteral("AB 正交输出：A/B 相位差用于表示方向。"));
+    addOutputDiagram(QStringLiteral(":/reference/images/feedback_cw_ccw.png"),
+                     QStringLiteral("双脉冲输出：CW 与 CCW 分别表示正、反转。"));
+    addOutputDiagram(QStringLiteral(":/reference/images/feedback_pulse_dir.png"),
+                     QStringLiteral("脉冲+方向输出：DIR 电平表示方向。"));
     auto *applyOutputButton = new QPushButton(QStringLiteral("写入等价输出设置"), outputPage);
     applyOutputButton->setObjectName(QStringLiteral("primaryButton"));
     outputLayout->addWidget(applyOutputButton, 0, Qt::AlignLeft);

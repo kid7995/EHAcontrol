@@ -5,6 +5,8 @@
 
 namespace {
 
+constexpr double TelemetryFrameIntervalMs = 2.0;
+
 quint16 readUInt16(const QByteArray &data, int offset)
 {
     return static_cast<quint16>(
@@ -100,6 +102,8 @@ bool DeviceSerialService::open(const Options &options)
     m_readingParameters = false;
     m_readParameterCount = 0;
     m_telemetry = Telemetry();
+    m_frameTimestampCursorMs =
+        static_cast<double>(QDateTime::currentMSecsSinceEpoch());
 
     emit connectionChanged(true, m_serial.portName());
 
@@ -110,7 +114,6 @@ bool DeviceSerialService::open(const Options &options)
         if (!isOpen()) {
             return;
         }
-        writeFrame(parameterFrame(2, 79));
         m_heartbeatTimer->start();
     });
     return true;
@@ -208,17 +211,17 @@ bool DeviceSerialService::sendFrame(const QByteArray &frame)
 
 bool DeviceSerialService::requestMotorEnable()
 {
-    return sendFrame(frameFromHex(QStringLiteral("55 55 D7 D7 7D 7D AA AA")));
+    return sendFrame(frameFromHex(QStringLiteral("55 55 12 12 21 21 AA AA")));
 }
 
 bool DeviceSerialService::requestMotorDisable()
 {
-    return sendFrame(frameFromHex(QStringLiteral("55 55 D8 D8 8D 8D AA AA")));
+    return sendFrame(frameFromHex(QStringLiteral("55 55 ED ED DE DE AA AA")));
 }
 
 bool DeviceSerialService::requestFaultReset()
 {
-    return sendFrame(frameFromHex(QStringLiteral("55 55 00 65 00 01 AA AA")));
+    return sendFrame(frameFromHex(QStringLiteral("55 55 DC DC CD CD AA AA")));
 }
 
 bool DeviceSerialService::requestParameterSave()
@@ -321,6 +324,7 @@ void DeviceSerialService::parseBuffer()
 
         const quint8 frameType = static_cast<quint8>(m_receiveBuffer.at(2));
         if (frameType == 0xAA) {
+            m_frameTimestampCursorMs += TelemetryFrameIntervalMs;
             const quint16 parameter = readUInt16(m_receiveBuffer, 3);
             const quint16 value = readUInt16(m_receiveBuffer, 5);
             m_receiveBuffer.remove(0, 7);
@@ -340,10 +344,13 @@ void DeviceSerialService::parseBuffer()
             if (m_receiveBuffer.size() < 8) {
                 break;
             }
+            m_frameTimestampCursorMs += TelemetryFrameIntervalMs;
+            const QDateTime frameTimestamp = QDateTime::fromMSecsSinceEpoch(
+                qRound64(m_frameTimestampCursorMs));
             const quint8 dataType = static_cast<quint8>(m_receiveBuffer.at(3));
             const quint32 rawValue = readUInt32(m_receiveBuffer, 4);
             m_receiveBuffer.remove(0, 8);
-            applyTelemetryByte(dataType, rawValue);
+            applyTelemetryByte(dataType, rawValue, frameTimestamp);
             continue;
         }
 
@@ -355,12 +362,29 @@ void DeviceSerialService::parseBuffer()
     }
 }
 
-void DeviceSerialService::applyTelemetryByte(quint8 type, quint32 rawValue)
+void DeviceSerialService::applyTelemetryByte(quint8 type, quint32 rawValue,
+                                             const QDateTime &frameTimestamp)
 {
     const qint32 signedValue = static_cast<qint32>(rawValue);
+    const qint16 highWord = static_cast<qint16>((rawValue >> 16) & 0xFFFFU);
+    const qint16 lowWord = static_cast<qint16>(rawValue & 0xFFFFU);
     switch (type) {
+    case 0x01:
+        m_telemetry.positionCommand = static_cast<double>(rawValue);
+        break;
+    case 0x02:
+        m_telemetry.position = static_cast<double>(signedValue);
+        break;
+    case 0x03:
+        m_telemetry.speedCommand = static_cast<double>(highWord);
+        m_telemetry.scopeSpeed = static_cast<double>(lowWord);
+        break;
+    case 0x04:
+        m_telemetry.currentCommand = static_cast<double>(highWord) * 0.01;
+        m_telemetry.scopeCurrent = static_cast<double>(lowWord) * 0.01;
+        break;
     case 0x07:
-        m_telemetry.force = static_cast<double>(rawValue);
+        m_telemetry.parameterMonitor = static_cast<double>(rawValue);
         break;
     case 0x08:
         m_telemetry.current = static_cast<double>(signedValue) * 0.01;
@@ -380,6 +404,9 @@ void DeviceSerialService::applyTelemetryByte(quint8 type, quint32 rawValue)
     case 0x1A:
         m_telemetry.busVoltage = static_cast<double>(rawValue) * 0.01;
         break;
+    case 0x12:
+        m_telemetry.positionError = static_cast<double>(signedValue);
+        break;
     case 0x05:
         m_telemetry.statusWord = rawValue;
         m_telemetry.motorEnabled = (rawValue & 0x01U) != 0;
@@ -390,7 +417,9 @@ void DeviceSerialService::applyTelemetryByte(quint8 type, quint32 rawValue)
     }
 
     m_telemetry.valid = true;
-    m_telemetry.timestamp = QDateTime::currentDateTime();
+    m_telemetry.updatedType = type;
+    m_telemetry.timestampMs = m_frameTimestampCursorMs;
+    m_telemetry.timestamp = frameTimestamp;
     emit telemetryUpdated(m_telemetry);
 }
 
