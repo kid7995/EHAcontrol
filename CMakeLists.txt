@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.16)
 
 project(EHAcontrol VERSION 0.1 LANGUAGES CXX)
 
+if(WIN32)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        get_filename_component(_qt_cxx_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        find_program(_qt_windres NAMES windres HINTS "${_qt_cxx_compiler_dir}" REQUIRED)
+        set(CMAKE_RC_COMPILER "${_qt_windres}" CACHE FILEPATH "Windows resource compiler" FORCE)
+    endif()
+    enable_language(RC)
+endif()
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -22,6 +31,10 @@ set(PROJECT_SOURCES
         calibrationsettingsdialog.cpp
         calibrationsettingsdialog.h
 )
+
+if(WIN32)
+    list(APPEND PROJECT_SOURCES EHAcontrol.rc)
+endif()
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(EHAcontrol
