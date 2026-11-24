@@ -1,12 +1,15 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "calibrationprofile.h"
+
 #include <QMainWindow>
 #include <QSerialPort>
 #include <QtSerialPort/QSerialPortInfo>
 #include <QTimer>
 #include <QDateTime>
 #include <QIcon>
+#include <QSet>
 #include <QThread> // 新增
 #include <QTcpSocket>
 //检测绘图
@@ -24,6 +27,8 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
+class QAction;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -35,18 +40,34 @@ public:
 private:
     Ui::MainWindow *ui;
     QSerialPort *serial;
+    QAction *m_calibrationSettingsAction = nullptr;
 
     void initActions();
     void initSerialPort();
+    void createMenus();
     void sendData(quint16 pn, quint16 value);
     static void delayMS(int ms);
+    void initializeCalibrationProfiles();
+    void applyCalibrationProfile(const CalibrationProfile &profile);
+    void updateCalibrationSummary();
+    void updateKbResultUi();
+    void setOperationRunning(bool running);
+    bool ensureReadyForCalibration(bool requireSensor);
+    bool acquireForcePoint(int forceN, quint16 *actualForceN,
+                           QDateTime *sampleTime = nullptr);
+    bool runLookupCalibration();
+    bool runKbCalibration();
     bool Compensation=false;
 
     //力传感报文
     QTcpSocket *tcpSocket;
     QTimer *m_readTimer;
     QTimer *m_heartbeatTimer;
-    quint16 sensorforceValue;
+    quint16 sensorforceValue = 0;
+    bool m_sensorSampleValid = false;
+    QDateTime m_sensorSampleTime;
+    quint16 m_modbusTransactionId = 0;
+    QByteArray m_modbusRxBuffer;
 
 //检测绘图
     QChart *m_chart;
@@ -58,9 +79,27 @@ private:
     QVector<quint16> m_calibForwardValues;  // 从设备读取的PN140~PN149（写入报告H列）
     QVector<quint16> m_calibReverseValues;  // 从设备读取的PN180~PN189（写入报告J列）
     quint16 m_pn170Value = 0;               // 从设备读取的PN170（写入报告E6）
+    CalibrationProfile m_calibrationProfile;
+    QVector<int> m_activeForcePoints;
+    bool m_testComplete = false;
+    bool m_lookupCalibrationComplete = false;
+    bool m_calibrationWritten = false;
+    bool m_kbFitValid = false;
+    bool m_operationRunning = false;
+    double m_fitK = 0.0;
+    double m_fitB = 0.0;
+    double m_fitRSquared = 0.0;
+    double m_fitMaxErrorN = 0.0;
+    double m_fitRmsErrorN = 0.0;
+    double m_maxForwardDeviationN = 0.0;
+    double m_maxReverseDeviationN = 0.0;
+    int m_pn168Candidate = 0;
+    int m_pn169Candidate = 0;
     void exportCalibrationReport(const QString &savePath, const QString &deviceId);
     bool readCalibParamsFromDevice();
     bool m_waitingForCalibParams = false;
+    bool m_calibReadComplete = false;
+    QSet<quint16> m_calibParametersSeen;
 
     //UI动画
     QPropertyAnimation *m_tabAnimation;
@@ -102,6 +141,8 @@ private slots:
     void onSerialReadyRead();
     void sendHeartbeat();
     void onSwitchEthercatButtonClicked();
+    void openCalibrationSettings();
+    void writeKbCalibration();
 
 signals:
     void calibParamsReadFinished();

@@ -17,6 +17,10 @@ set(PROJECT_SOURCES
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
+        calibrationprofile.cpp
+        calibrationprofile.h
+        calibrationsettingsdialog.cpp
+        calibrationsettingsdialog.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "calibrationsettingsdialog.h"
 #include "./ui_mainwindow.h"
 #include <QDebug>
 #include <QPropertyAnimation>
@@ -9,7 +10,18 @@
 #include <QDir>
 #include <QFile>
 #include <QInputDialog>
+#include <QKeySequence>
 #include <QLineEdit>
+#include <QAction>
+#include <QMenu>
+#include <QMenuBar>
+#include <QDataStream>
+#include <QDialog>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QRegularExpression>
+#include <QSet>
+#include <QSettings>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -21,6 +33,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 {
     ui->setupUi(this);
+    ui->tabWidget->setCurrentIndex(0);
     centralWidget()->setFixedSize(1280, 720);
     setWindowIcon(QIcon(":/pic/image/logo.ico"));
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 0);
@@ -37,18 +50,24 @@ MainWindow::MainWindow(QWidget *parent)
     ui->EHAreset->setEnabled(false);
     ui->EHAcalibration->setEnabled(false);
     ui->EHAzero->setEnabled(false);
-    ui->EHAmassconfirm->setEnabled(true);
+    ui->EHAmassconfirm->setEnabled(false);
     // ui->EHAtest_2->setEnabled(false);
     // ui->EHAtest->setEnabled(false);
 
     // 启动力传感器连接线程
 
+    initializeCalibrationProfiles();
     initActions();
+    createMenus();
 
     connect(tcpSocket, &QTcpSocket::readyRead, this, &MainWindow::onSocketReadyRead);
     connect(m_readTimer, &QTimer::timeout, this, &MainWindow::readModbusData);
     connect(m_heartbeatTimer, &QTimer::timeout, this, &MainWindow::sendHeartbeat);
     connect(ui->tabWidget,&QTabWidget::currentChanged,this,&MainWindow::ontabwidgetindexchanged);
+    connect(tcpSocket, &QTcpSocket::disconnected, this, [this]() {
+        m_readTimer->stop();
+        m_sensorSampleValid = false;
+    });
 }
 
 MainWindow::~MainWindow()
@@ -78,8 +97,471 @@ void MainWindow::initActions()
             this, &MainWindow::onEHAtestButtonClicked);
     connect(serial, &QSerialPort::readyRead,
             this, &MainWindow::onSerialReadyRead);
+    connect(ui->openCalibrationSettingsButton, &QPushButton::clicked,
+            this, &MainWindow::openCalibrationSettings);
+    connect(ui->writeKbButton, &QPushButton::clicked,
+            this, &MainWindow::writeKbCalibration);
 }
 
+void MainWindow::createMenus()
+{
+    menuBar()->setNativeMenuBar(false);
+    QMenu *settingsMenu = menuBar()->addMenu(QStringLiteral("设置(&S)"));
+    m_calibrationSettingsAction =
+        settingsMenu->addAction(QStringLiteral("标定设置..."));
+    m_calibrationSettingsAction->setObjectName(
+        QStringLiteral("calibrationSettingsAction"));
+    m_calibrationSettingsAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
+    connect(m_calibrationSettingsAction, &QAction::triggered,
+            this, &MainWindow::openCalibrationSettings);
+
+    menuBar()->setStyleSheet(QStringLiteral(R"(
+        QMenuBar {
+            background: #FFFFFF;
+            color: #303844;
+            border-bottom: 1px solid #D8DDE4;
+            padding: 1px 8px;
+            font-family: "Microsoft YaHei UI";
+            font-size: 12px;
+        }
+        QMenuBar::item {
+            background: transparent;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+        QMenuBar::item:selected {
+            background: #EEF2F6;
+        }
+        QMenu {
+            background: #FFFFFF;
+            color: #303844;
+            border: 1px solid #CFD6DF;
+            padding: 5px;
+            font-family: "Microsoft YaHei UI";
+            font-size: 12px;
+        }
+        QMenu::item {
+            padding: 6px 28px 6px 12px;
+            border-radius: 4px;
+        }
+        QMenu::item:selected {
+            background: #E8F2F0;
+            color: #0F5F58;
+        }
+    )"));
+}
+
+void MainWindow::initializeCalibrationProfiles()
+{
+    QSettings settings;
+    m_calibrationProfile = calibrationProfileById(
+        settings.value(QStringLiteral("calibration/model"),
+                       QStringLiteral("ECM1A2000")).toString());
+    const int savedMaximum = settings.value(
+        QStringLiteral("calibration/maxForce"),
+        m_calibrationProfile.ratedMaxForceN).toInt();
+    m_calibrationProfile.calibrationMaxForceN =
+        qBound(1, savedMaximum, m_calibrationProfile.ratedMaxForceN);
+    const int savedStep = settings.value(
+        QStringLiteral("calibration/step"),
+        m_calibrationProfile.stepN).toInt();
+    m_calibrationProfile.stepN =
+        qBound(1, savedStep, m_calibrationProfile.calibrationMaxForceN);
+    m_calibrationProfile.tolerancePercent =
+        qBound(0.1, settings.value(QStringLiteral("calibration/tolerancePercent"),
+                                   m_calibrationProfile.tolerancePercent).toDouble(),
+               10.0);
+    if (!m_calibrationProfile.allowsNarrowRange) {
+        m_calibrationProfile.calibrationMaxForceN =
+            m_calibrationProfile.ratedMaxForceN;
+        m_calibrationProfile.stepN = 200;
+    }
+    m_activeForcePoints = buildCalibrationForcePoints(
+        m_calibrationProfile.calibrationMaxForceN, m_calibrationProfile.stepN);
+    updateCalibrationSummary();
+    updateKbResultUi();
+}
+
+void MainWindow::applyCalibrationProfile(const CalibrationProfile &profile)
+{
+    if (m_operationRunning) {
+        return;
+    }
+
+    m_calibrationProfile = profile;
+    m_activeForcePoints = buildCalibrationForcePoints(
+        m_calibrationProfile.calibrationMaxForceN, m_calibrationProfile.stepN);
+
+    m_kbFitValid = false;
+    m_calibrationWritten = false;
+    m_testComplete = false;
+    m_lookupCalibrationComplete = false;
+
+    updateKbResultUi();
+    updateCalibrationSummary();
+    setOperationRunning(false);
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("calibration/model"), profile.id);
+    settings.setValue(QStringLiteral("calibration/maxForce"),
+                      profile.calibrationMaxForceN);
+    settings.setValue(QStringLiteral("calibration/step"), profile.stepN);
+    settings.setValue(QStringLiteral("calibration/tolerancePercent"),
+                      profile.tolerancePercent);
+}
+
+void MainWindow::openCalibrationSettings()
+{
+    if (m_operationRunning || serial->isOpen()) {
+        QMessageBox::information(
+            this, QStringLiteral("标定设置"),
+            QStringLiteral("设备已连接或正在执行流程，不能修改标定方案。"));
+        return;
+    }
+
+    CalibrationSettingsDialog dialog(m_calibrationProfile, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        applyCalibrationProfile(dialog.calibrationProfile());
+        ui->textEdit->append(QStringLiteral("已更新标定方案：%1，0–%2 N，%3 N 分段。")
+                                 .arg(m_calibrationProfile.displayName)
+                                 .arg(m_calibrationProfile.calibrationMaxForceN)
+                                 .arg(m_calibrationProfile.stepN));
+    }
+}
+
+void MainWindow::updateCalibrationSummary()
+{
+    QStringList allPoints;
+    for (int point : m_activeForcePoints) {
+        allPoints.append(QString::number(point));
+    }
+    ui->calibrationSummaryLabel->setToolTip(
+        QStringLiteral("测试点：%1 N").arg(allPoints.join(QStringLiteral(" / "))));
+
+    const bool lookup =
+        m_calibrationProfile.algorithm() == CalibrationAlgorithm::LookupTable;
+    ui->EHAcalibration->setText(
+        lookup ? QStringLiteral("执行查表标定")
+               : QStringLiteral("采集并计算 K/B"));
+    ui->calibrationSummaryLabel->setText(
+        QStringLiteral("%1 · 0–%2 N")
+            .arg(m_calibrationProfile.displayName)
+            .arg(m_calibrationProfile.calibrationMaxForceN));
+}
+
+void MainWindow::updateKbResultUi()
+{
+    const bool lookup =
+        m_calibrationProfile.algorithm() == CalibrationAlgorithm::LookupTable;
+    ui->calibrationResultGroup->setTitle(
+        lookup ? QStringLiteral("查表标定结果")
+               : QStringLiteral("K/B 拟合结果"));
+    for (QWidget *widget : {
+             static_cast<QWidget *>(ui->fitKCaption),
+             static_cast<QWidget *>(ui->fitKValue),
+             static_cast<QWidget *>(ui->pn168Caption),
+             static_cast<QWidget *>(ui->pn168Value),
+             static_cast<QWidget *>(ui->fitBCaption),
+             static_cast<QWidget *>(ui->fitBValue),
+             static_cast<QWidget *>(ui->pn169Caption),
+             static_cast<QWidget *>(ui->pn169Spin),
+             static_cast<QWidget *>(ui->fitQualityCaption),
+             static_cast<QWidget *>(ui->fitQualityValue),
+             static_cast<QWidget *>(ui->writeKbButton),
+         }) {
+        widget->setVisible(!lookup);
+    }
+    ui->calibrationMethodValue->setText(
+        lookup ? QStringLiteral("查表（PN140–189）")
+               : QStringLiteral("线性拟合 Pn168 / Pn169"));
+    ui->fitKValue->setText(m_kbFitValid ? QString::number(m_fitK, 'f', 4)
+                                       : QStringLiteral("--"));
+    ui->pn168Value->setText(m_kbFitValid ? QString::number(m_pn168Candidate)
+                                        : QStringLiteral("--"));
+    ui->fitBValue->setText(m_kbFitValid ? QString::number(m_fitB, 'f', 4)
+                                       : QStringLiteral("--"));
+    ui->fitQualityValue->setText(
+        m_kbFitValid
+            ? QStringLiteral("R²=%1  Max=%2 N  RMS=%3 N")
+                  .arg(m_fitRSquared, 0, 'f', 5)
+                  .arg(m_fitMaxErrorN, 0, 'f', 3)
+                  .arg(m_fitRmsErrorN, 0, 'f', 3)
+            : QStringLiteral("--"));
+    ui->toleranceValue->setText(
+        QStringLiteral("±%1 N").arg(m_calibrationProfile.toleranceN(), 0, 'f', 1));
+    ui->pn169Spin->setEnabled(!lookup && !m_operationRunning);
+    ui->writeKbButton->setEnabled(
+        !lookup && m_kbFitValid && serial->isOpen() && !m_operationRunning);
+}
+
+void MainWindow::setOperationRunning(bool running)
+{
+    m_operationRunning = running;
+    const bool connected = serial->isOpen();
+    const bool settingsEnabled = !running && !connected;
+    ui->openCalibrationSettingsButton->setEnabled(settingsEnabled);
+    if (m_calibrationSettingsAction) {
+        m_calibrationSettingsAction->setEnabled(settingsEnabled);
+    }
+    ui->EHAconnect->setEnabled(!running);
+    ui->EHAreset->setEnabled(!running && connected);
+    ui->EHAtest->setEnabled(!running && connected);
+    ui->EHAtest_2->setEnabled(!running && connected);
+    ui->EHAcalibration->setEnabled(
+        !running && connected && m_activeForcePoints.size() >= 2);
+    ui->EHAzero->setEnabled(!running && connected && m_calibrationWritten);
+    ui->EHAmassconfirm->setEnabled(!running && connected && m_calibrationWritten);
+    ui->pn169Spin->setEnabled(
+        !running && connected
+        && m_calibrationProfile.algorithm() == CalibrationAlgorithm::LinearFit);
+    ui->writeKbButton->setEnabled(
+        !running && connected && m_kbFitValid
+        && m_calibrationProfile.algorithm() == CalibrationAlgorithm::LinearFit);
+}
+
+bool MainWindow::ensureReadyForCalibration(bool requireSensor)
+{
+    if (!serial->isOpen()) {
+        ui->textEdit->append(QStringLiteral("错误：请先连接 EHA 串口。"));
+        return false;
+    }
+    if (m_activeForcePoints.size() < 2
+        || m_calibrationProfile.calibrationMaxForceN <= 0
+        || m_calibrationProfile.stepN <= 0) {
+        ui->textEdit->append(QStringLiteral("错误：标定范围或分段无效。"));
+        return false;
+    }
+    if (requireSensor
+        && (tcpSocket->state() != QTcpSocket::ConnectedState
+            || !m_sensorSampleValid)) {
+        ui->textEdit->append(
+            QStringLiteral("错误：力传感器未连接或尚未收到有效采样。"));
+        return false;
+    }
+    return true;
+}
+
+bool MainWindow::acquireForcePoint(int forceN, quint16 *actualForceN,
+                                   QDateTime *sampleTime)
+{
+    if (!actualForceN) {
+        return false;
+    }
+
+    const QDateTime commandTime = QDateTime::currentDateTime();
+    settleForce(static_cast<quint16>(qBound(0, forceN, 65535)));
+    delayMS(2000);
+
+    if (!m_sensorSampleValid || !m_sensorSampleTime.isValid()
+        || m_sensorSampleTime < commandTime) {
+        ui->textEdit->append(
+            QStringLiteral("错误：设定 %1 N 后未收到新的力传感器数据。").arg(forceN));
+        return false;
+    }
+
+    *actualForceN = static_cast<quint16>(qRound(sensorforceValue / 10.0));
+    if (sampleTime) {
+        *sampleTime = m_sensorSampleTime;
+    }
+    return true;
+}
+
+bool MainWindow::runLookupCalibration()
+{
+    if (m_calibrationProfile.id != QStringLiteral("ECM1A2000")) {
+        return false;
+    }
+
+    QVector<int> lookupPoints;
+    for (int point : m_activeForcePoints) {
+        if (point > 0) {
+            lookupPoints.append(point);
+        }
+    }
+    if (lookupPoints.size() != 10) {
+        ui->textEdit->append(
+            QStringLiteral("错误：ECM1A2000 查表必须包含 200–2000 N 的 10 个点。"));
+        return false;
+    }
+
+    if (QMessageBox::question(
+            this, QStringLiteral("开始查表标定"),
+            QStringLiteral("将按 200–2000 N 执行正反向采样，并写入 "
+                           "Pn140–Pn149、Pn180–Pn189。\n\n"
+                           "0 N 仅参与检测，不写入查表参数。是否继续？"))
+        != QMessageBox::Yes) {
+        return false;
+    }
+
+    m_calibForwardValues.fill(0, 10);
+    m_calibReverseValues.fill(0, 10);
+    m_maxForwardDeviationN = 0.0;
+    m_maxReverseDeviationN = 0.0;
+    m_calibrationWritten = false;
+
+    for (int index = 0; index < lookupPoints.size(); ++index) {
+        quint16 actual = 0;
+        if (!acquireForcePoint(lookupPoints.at(index), &actual)) {
+            settleForce(0);
+            return false;
+        }
+        m_calibForwardValues[index] = actual;
+        m_maxForwardDeviationN =
+            qMax(m_maxForwardDeviationN,
+                 qAbs(static_cast<double>(actual) - lookupPoints.at(index)));
+        sendData(static_cast<quint16>(140 + index), actual);
+    }
+
+    for (int index = lookupPoints.size() - 1; index >= 0; --index) {
+        quint16 actual = 0;
+        if (!acquireForcePoint(lookupPoints.at(index), &actual)) {
+            settleForce(0);
+            return false;
+        }
+        m_calibReverseValues[index] = actual;
+        m_maxReverseDeviationN =
+            qMax(m_maxReverseDeviationN,
+                 qAbs(static_cast<double>(actual) - lookupPoints.at(index)));
+        sendData(static_cast<quint16>(180 + index), actual);
+    }
+
+    settleForce(0);
+    sendData(152, 1);
+    sendData(2, 79);
+    m_lookupCalibrationComplete = true;
+    m_calibrationWritten = true;
+    ui->textEdit->append(
+        QStringLiteral("查表标定完成并已发送 Pn152=1。正向最大偏差 %1 N，"
+                       "允许 ±%2 N。")
+            .arg(m_maxForwardDeviationN, 0, 'f', 1)
+            .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1));
+    return true;
+}
+
+bool MainWindow::runKbCalibration()
+{
+    if (QMessageBox::question(
+            this, QStringLiteral("采集并计算 K/B"),
+            QStringLiteral("将按 0–%1 N、每 %2 N 执行正向采样。\n"
+                           "反向数据仅作参考，不参与 K/B 拟合。\n\n"
+                           "是否开始？")
+                .arg(m_calibrationProfile.calibrationMaxForceN)
+                .arg(m_calibrationProfile.stepN))
+        != QMessageBox::Yes) {
+        return false;
+    }
+
+    m_testForwardValues.fill(0, m_activeForcePoints.size());
+    m_testReverseValues.fill(0, m_activeForcePoints.size());
+    m_testResults.clear();
+    QVector<QPointF> forwardFitPoints;
+    forwardFitPoints.reserve(m_activeForcePoints.size());
+    m_maxForwardDeviationN = 0.0;
+    m_maxReverseDeviationN = 0.0;
+    m_kbFitValid = false;
+    m_calibrationWritten = false;
+
+    for (int index = 0; index < m_activeForcePoints.size(); ++index) {
+        const int setForce = m_activeForcePoints.at(index);
+        quint16 actual = 0;
+        if (!acquireForcePoint(setForce, &actual)) {
+            settleForce(0);
+            return false;
+        }
+        m_testForwardValues[index] = actual;
+        forwardFitPoints.append(QPointF(setForce, actual));
+        const double deviation = static_cast<double>(actual) - setForce;
+        m_testResults.append({static_cast<quint16>(setForce), deviation});
+        m_maxForwardDeviationN =
+            qMax(m_maxForwardDeviationN, qAbs(deviation));
+    }
+
+    for (int index = m_activeForcePoints.size() - 1; index >= 0; --index) {
+        const int setForce = m_activeForcePoints.at(index);
+        quint16 actual = 0;
+        if (!acquireForcePoint(setForce, &actual)) {
+            ui->textEdit->append(
+                QStringLiteral("警告：反向参考点 %1 N 未取得有效数据。").arg(setForce));
+            continue;
+        }
+        m_testReverseValues[index] = actual;
+        m_maxReverseDeviationN =
+            qMax(m_maxReverseDeviationN,
+                 qAbs(static_cast<double>(actual) - setForce));
+    }
+
+    settleForce(0);
+    const LinearFitResult fit = fitLinearForward(forwardFitPoints);
+    if (!fit.valid) {
+        ui->textEdit->append(QStringLiteral("错误：K/B 线性拟合失败。"));
+        return false;
+    }
+
+    const int pn168 = calibrationPn168FromK(fit.k);
+    if (pn168 < 0 || pn168 > 65535) {
+        ui->textEdit->append(
+            QStringLiteral("错误：Pn168 计算结果超出 0–65535：%1。")
+                .arg(pn168));
+        return false;
+    }
+
+    m_fitK = fit.k;
+    m_fitB = fit.b;
+    m_fitRSquared = fit.rSquared;
+    m_fitMaxErrorN = fit.maxErrorN;
+    m_fitRmsErrorN = fit.rmsErrorN;
+    m_pn168Candidate = pn168;
+    m_pn169Candidate = ui->pn169Spin->value();
+    m_kbFitValid = true;
+    m_testComplete = true;
+    updateKbResultUi();
+
+    ui->textEdit->append(
+        QStringLiteral("K/B 拟合完成：K=%1，Pn168=%2，B=%3。\n"
+                       "正向最大偏差 %4 N，允许 ±%5 N；反向参考最大偏差 %6 N。")
+            .arg(m_fitK, 0, 'f', 5)
+            .arg(m_pn168Candidate)
+            .arg(m_fitB, 0, 'f', 5)
+            .arg(m_maxForwardDeviationN, 0, 'f', 2)
+            .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1)
+            .arg(m_maxReverseDeviationN, 0, 'f', 2));
+    return true;
+}
+
+void MainWindow::writeKbCalibration()
+{
+    if (!m_kbFitValid || !serial->isOpen()) {
+        ui->textEdit->append(QStringLiteral("错误：当前没有可写入的 K/B 结果。"));
+        return;
+    }
+
+    m_pn169Candidate = ui->pn169Spin->value();
+    if (QMessageBox::question(
+            this, QStringLiteral("确认写入 K/B"),
+            QStringLiteral("拟合 K：%1\nPn168：%2\n\n"
+                           "拟合 B：%3\nPn169 原始值：%4\n\n"
+                           "写入后将发送 Pn152=1 保存到 EEPROM。是否继续？")
+                .arg(m_fitK, 0, 'f', 5)
+                .arg(m_pn168Candidate)
+                .arg(m_fitB, 0, 'f', 5)
+                .arg(m_pn169Candidate),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    setOperationRunning(true);
+    sendData(168, static_cast<quint16>(qBound(0, m_pn168Candidate, 65535)));
+    sendData(169, static_cast<quint16>(qBound(0, m_pn169Candidate, 65535)));
+    sendData(152, 1);
+    sendData(2, 79);
+    m_calibrationWritten = true;
+    setOperationRunning(false);
+    ui->textEdit->append(
+        QStringLiteral("Pn168=%1、Pn169=%2 和 Pn152=1 已发送。")
+            .arg(m_pn168Candidate)
+            .arg(m_pn169Candidate));
+}
 
 void MainWindow::onserialportrefreshButtonClicked()
 {
@@ -184,75 +666,89 @@ void MainWindow::showImage(const QString &imagePath)
 
 void MainWindow::onEHAtestButtonClicked()
 {
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：请先连接串口！");
+    if (!ensureReadyForCalibration(true)) {
         return;
     }
-    ui->textEdit->append("开始EHA检测流程...");
 
-    // 清空之前的结果
+    if (QMessageBox::question(
+            this, QStringLiteral("开始 EHA 检测"),
+            QStringLiteral("型号：%1\n标定范围：0–%2 N\n分段：%3 N\n"
+                           "允许误差：±%4 N\n\n确认现场安全并开始检测？")
+                .arg(m_calibrationProfile.displayName)
+                .arg(m_calibrationProfile.calibrationMaxForceN)
+                .arg(m_calibrationProfile.stepN)
+                .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1))
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    setOperationRunning(true);
+    ui->textEdit->append(
+        QStringLiteral("开始 EHA 检测：%1，0–%2 N，%3 N 分段。")
+            .arg(m_calibrationProfile.displayName)
+            .arg(m_calibrationProfile.calibrationMaxForceN)
+            .arg(m_calibrationProfile.stepN));
+
     m_testResults.clear();
+    m_testForwardValues.fill(0, m_activeForcePoints.size());
+    m_testReverseValues.fill(0, m_activeForcePoints.size());
+    m_maxForwardDeviationN = 0.0;
+    m_maxReverseDeviationN = 0.0;
+    m_testComplete = true;
 
-    // 定义测试力值序列（含0点基准），正反向共用同一组数值
-    //浮动模块测试
-    // const QVector<quint16> testForces = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
-    //滚压设备测试
-    const QVector<quint16> testForces = {0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000};
-
-    m_testForwardValues.fill(0, testForces.size());
-    m_testReverseValues.fill(0, testForces.size());
-
-    // 正向测试(从小到大)，实际力写入 m_testForwardValues（对应报告C8~C18）
-    ui->textEdit->append("\n正向测试:");
-    qreal maxDeviation = 0.0; // 用于存储最大偏差值
-    for (int i = 0; i < testForces.size(); ++i) {
-        quint16 force = testForces[i];
-        settleForce(force);
-        delayMS(2000);
-
-        if (!sensorforceValue) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
-            continue;
+    ui->textEdit->append(QStringLiteral("\n正向测试（决定合格判定）："));
+    for (int index = 0; index < m_activeForcePoints.size(); ++index) {
+        const int setForce = m_activeForcePoints.at(index);
+        quint16 actualForce = 0;
+        if (!acquireForcePoint(setForce, &actualForce)) {
+            m_testComplete = false;
+            break;
         }
 
-        quint16 actualForce = qRound(sensorforceValue / 10.0);
-        m_testForwardValues[i] = actualForce;
-        qreal deviation = (qreal)actualForce - (qreal)force;
-        m_testResults.append({force, deviation});
-
-        // 更新最大偏差值
-        if (qAbs(deviation) > qAbs(maxDeviation)) {
-            maxDeviation = deviation;
-        }
-
-        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N, 偏差: %3N")
-                                 .arg(force).arg(actualForce).arg(deviation, 0, 'f', 1));
+        m_testForwardValues[index] = actualForce;
+        const double deviation = static_cast<double>(actualForce) - setForce;
+        m_testResults.append({static_cast<quint16>(setForce), deviation});
+        m_maxForwardDeviationN =
+            qMax(m_maxForwardDeviationN, qAbs(deviation));
+        ui->textEdit->append(
+            QStringLiteral("设定 %1 N，实际 %2 N，偏差 %3 N")
+                .arg(setForce)
+                .arg(actualForce)
+                .arg(deviation, 0, 'f', 2));
     }
 
-    // 反向测试(从大到小)，实际力写入 m_testReverseValues（对应报告D18~D8）
-    ui->textEdit->append("\n反向测试:");
-    for (int i = testForces.size() - 1; i >= 0; --i) {
-        quint16 force = testForces[i];
-        settleForce(force);
-        delayMS(2000);
-
-        if (!sensorforceValue) {
-            ui->textEdit->append("错误：无法读取到传感器数值!");
+    ui->textEdit->append(QStringLiteral("\n反向测试（仅作参考）："));
+    for (int index = m_activeForcePoints.size() - 1; index >= 0; --index) {
+        const int setForce = m_activeForcePoints.at(index);
+        quint16 actualForce = 0;
+        if (!acquireForcePoint(setForce, &actualForce)) {
+            ui->textEdit->append(
+                QStringLiteral("警告：反向参考点 %1 N 未取得有效数据。").arg(setForce));
             continue;
         }
-
-        quint16 actualForce = qRound(sensorforceValue / 10.0);
-        m_testReverseValues[i] = actualForce;
-        ui->textEdit->append(QString("设定力: %1N, 实际力: %2N").arg(force).arg(actualForce));
+        m_testReverseValues[index] = actualForce;
+        const double deviation = static_cast<double>(actualForce) - setForce;
+        m_maxReverseDeviationN =
+            qMax(m_maxReverseDeviationN, qAbs(deviation));
+        ui->textEdit->append(
+            QStringLiteral("设定 %1 N，实际 %2 N，参考偏差 %3 N")
+                .arg(setForce)
+                .arg(actualForce)
+                .arg(deviation, 0, 'f', 2));
     }
 
-    ui->textEdit->append(QString("\n最大偏差: %1N").arg(maxDeviation, 0, 'f', 1));
-
-    // 绘制偏差曲线图，并传递最大偏差值
-    showDeviationChart(maxDeviation);
-
-    // 测试完成后力值归零
     settleForce(0);
+    const bool passed =
+        m_testComplete
+        && m_maxForwardDeviationN <= m_calibrationProfile.toleranceN();
+    ui->textEdit->append(
+        QStringLiteral("\n正向最大偏差：%1 N；允许范围：±%2 N；结果：%3")
+            .arg(m_maxForwardDeviationN, 0, 'f', 2)
+            .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1)
+            .arg(passed ? QStringLiteral("合格") : QStringLiteral("不合格")));
+
+    showDeviationChart(m_maxForwardDeviationN);
+    setOperationRunning(false);
 }
 
 // 修改 showDeviationChart 函数，接收 maxDeviation 参数
@@ -299,7 +795,9 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
     axisY->setLinePenColor(QColor("#aaaaaa"));
 
     // 设置纵坐标范围
-    qreal rangeLimit = qAbs(maxDeviation) + 10;
+    qreal rangeLimit = qMax(qAbs(maxDeviation),
+                            static_cast<qreal>(m_calibrationProfile.toleranceN()))
+        + 10;
     if (rangeLimit < 50) {
         axisY->setRange(-rangeLimit, rangeLimit);
     } else {
@@ -346,8 +844,13 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
     resultLabel->setMinimumHeight(40);
 
     QString resultMessage;
-    if (qAbs(maxDeviation) < 30) {
-        resultMessage = "<font size='5' color='#4CAF50'>✓ 测试通过 (最大偏差: %1)</font>";
+    const bool passed =
+        m_testComplete
+        && qAbs(maxDeviation) <= m_calibrationProfile.toleranceN();
+    if (passed) {
+        resultMessage =
+            "<font size='5' color='#4CAF50'>✓ 测试通过 "
+            "(正向最大偏差: %1 N，允许 ±%2 N)</font>";
         resultLabel->setStyleSheet(
             "background-color: #E8F5E9;"
             "border: 1px solid #C8E6C9;"
@@ -355,7 +858,9 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
             "padding: 8px;"
             );
     } else {
-        resultMessage = "<font size='5' color='#F44336'>✗ 测试未通过 (最大偏差: %1)</font>";
+        resultMessage =
+            "<font size='5' color='#F44336'>✗ 测试未通过 "
+            "(正向最大偏差: %1 N，允许 ±%2 N)</font>";
         resultLabel->setStyleSheet(
             "background-color: #FFEBEE;"
             "border: 1px solid #FFCDD2;"
@@ -363,7 +868,9 @@ void MainWindow::showDeviationChart(qreal maxDeviation)
             "padding: 8px;"
             );
     }
-    resultLabel->setText(resultMessage.arg(QString::number(maxDeviation, 'f', 2)));
+    resultLabel->setText(resultMessage
+                             .arg(QString::number(qAbs(maxDeviation), 'f', 2))
+                             .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1));
     resultLayout->addWidget(resultLabel, 1);  // 结果标签占据大部分宽度
 
     // 保存按钮
@@ -470,6 +977,8 @@ bool MainWindow::readCalibParamsFromDevice()
     m_calibForwardValues.fill(0, 10);  // PN140~PN149
     m_calibReverseValues.fill(0, 10);  // PN180~PN189
     m_pn170Value = 0;                  // PN170
+    m_calibParametersSeen.clear();
+    m_calibReadComplete = false;
     m_serialRxBuffer.clear();
     m_waitingForCalibParams = true;
     m_heartbeatTimer->stop();  // 读取参数期间停止心跳，避免干扰设备推送
@@ -488,9 +997,11 @@ bool MainWindow::readCalibParamsFromDevice()
 
     m_heartbeatTimer->start(100);
 
-    if (m_waitingForCalibParams) {
+    if (m_waitingForCalibParams || !m_calibReadComplete) {
         m_waitingForCalibParams = false;
-        ui->textEdit->append("错误：读取PN140~149/PN180~189参数超时，请检查设备连接！");
+        ui->textEdit->append(
+            QStringLiteral("错误：PN140–149、PN180–189、Pn170 未完整读取，"
+                           "请检查设备连接和回包。"));
         return false;
     }
     ui->textEdit->append("PN140~149 / PN180~189 参数读取完毕");
@@ -499,12 +1010,24 @@ bool MainWindow::readCalibParamsFromDevice()
 
 void MainWindow::exportCalibrationReport(const QString &savePath, const QString &deviceId)
 {
-    if (m_testForwardValues.size() < 11 || m_testReverseValues.size() < 11) {
+    if (!m_testComplete
+        || m_testForwardValues.size() != m_activeForcePoints.size()
+        || m_testReverseValues.size() != m_activeForcePoints.size()) {
         ui->textEdit->append("错误：EHA检测数据不完整，请先完成一次EHA检测！");
         return;
     }
-    if (m_calibForwardValues.size() < 10 || m_calibReverseValues.size() < 10) {
-        ui->textEdit->append("错误：PN参数读取不完整！");
+
+    const bool lookup =
+        m_calibrationProfile.algorithm() == CalibrationAlgorithm::LookupTable;
+    if (lookup
+        && (!m_lookupCalibrationComplete
+            || m_calibForwardValues.size() < 10
+            || m_calibReverseValues.size() < 10)) {
+        ui->textEdit->append("错误：ECM1A2000 查表标定数据不完整！");
+        return;
+    }
+    if (!lookup && (!m_kbFitValid || !m_calibrationWritten)) {
+        ui->textEdit->append("错误：K/B 尚未计算或尚未写入设备！");
         return;
     }
 
@@ -532,43 +1055,129 @@ void MainWindow::exportCalibrationReport(const QString &savePath, const QString 
 
     QAxObject *sheets = workbook->querySubObject("Worksheets");
     QAxObject *sheet = sheets->querySubObject("Item(int)", 1); // 第一张表"耐久测试"
+    if (!sheets || !sheet) {
+        ui->textEdit->append("错误：标定报告模板缺少预期工作表！");
+        workbook->dynamicCall("Close()");
+        excel.dynamicCall("Quit()");
+        delete sheet;
+        delete sheets;
+        delete workbook;
+        delete workbooks;
+        return;
+    }
 
-    // 设备编号 → B2(与F2合并)
-    QAxObject *deviceCell = sheet->querySubObject("Cells(int,int)", 2, 2);
-    deviceCell->setProperty("Value", deviceId);
-    delete deviceCell;
+    const auto setCell = [](QAxObject *worksheet, int row, int column,
+                            const QVariant &value) {
+        QAxObject *cell = worksheet->querySubObject("Cells(int,int)", row, column);
+        if (cell) {
+            cell->setProperty("Value", value);
+            delete cell;
+        }
+    };
+
+    // 型号和设备编号 → B2(与F2合并)
+    setCell(sheet, 2, 2,
+            QStringLiteral("%1 / %2")
+                .arg(m_calibrationProfile.displayName,
+                     deviceId.trimmed().isEmpty()
+                         ? QStringLiteral("未填写设备编号")
+                         : deviceId.trimmed()));
 
     // PN170 → E6
-    QAxObject *pn170Cell = sheet->querySubObject("Cells(int,int)", 6, 5);
-    pn170Cell->setProperty("Value", m_pn170Value);
-    delete pn170Cell;
+    setCell(sheet, 6, 5, m_pn170Value);
+
+    QAxObject *testRange = sheet->querySubObject("Range(const QString&)", "C8:D18");
+    if (testRange) {
+        testRange->dynamicCall("ClearContents()");
+        delete testRange;
+    }
 
     // 正向实际力 → C8~C18
-    for (int i = 0; i < m_testForwardValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 3);
-        cell->setProperty("Value", m_testForwardValues[i]);
-        delete cell;
+    const int firstSheetCount = qMin(11, m_testForwardValues.size());
+    for (int i = 0; i < firstSheetCount; ++i) {
+        setCell(sheet, 8 + i, 3, m_testForwardValues.at(i));
     }
 
     // 反向实际力 → D8~D18（同一行对应同一设定力档位）
-    for (int i = 0; i < m_testReverseValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 4);
-        cell->setProperty("Value", m_testReverseValues[i]);
-        delete cell;
+    for (int i = 0; i < firstSheetCount; ++i) {
+        setCell(sheet, 8 + i, 4, m_testReverseValues.at(i));
     }
 
-    // PN140~PN149 → H8~H17
-    for (int i = 0; i < m_calibForwardValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 8);
-        cell->setProperty("Value", m_calibForwardValues[i]);
-        delete cell;
+    QAxObject *lookupRange = sheet->querySubObject("Range(const QString&)", "H8:J17");
+    if (lookupRange) {
+        lookupRange->dynamicCall("ClearContents()");
+        delete lookupRange;
+    }
+    if (lookup) {
+        // PN140~PN149 → H8~H17
+        for (int i = 0; i < qMin(10, m_calibForwardValues.size()); ++i) {
+            setCell(sheet, 8 + i, 8, m_calibForwardValues.at(i));
+        }
+        // PN180~PN189 → J8~J17
+        for (int i = 0; i < qMin(10, m_calibReverseValues.size()); ++i) {
+            setCell(sheet, 8 + i, 10, m_calibReverseValues.at(i));
+        }
     }
 
-    // PN180~PN189 → J8~J17
-    for (int i = 0; i < m_calibReverseValues.size(); ++i) {
-        QAxObject *cell = sheet->querySubObject("Cells(int,int)", 8 + i, 10);
-        cell->setProperty("Value", m_calibReverseValues[i]);
-        delete cell;
+    const bool passed =
+        m_testComplete
+        && m_maxForwardDeviationN <= m_calibrationProfile.toleranceN();
+    setCell(sheet, 21, 2, deviceId.trimmed());
+    setCell(sheet, 22, 2, m_calibrationProfile.displayName);
+    setCell(sheet, 23, 2, m_calibrationProfile.ratedMaxForceN);
+    setCell(sheet, 24, 2, m_calibrationProfile.calibrationMaxForceN);
+    setCell(sheet, 25, 2, m_calibrationProfile.stepN);
+    setCell(sheet, 26, 2,
+            lookup ? QStringLiteral("查表") : QStringLiteral("K/B 拟合"));
+    setCell(sheet, 27, 2, m_calibrationProfile.tolerancePercent / 100.0);
+    setCell(sheet, 28, 2, m_calibrationProfile.toleranceN());
+    setCell(sheet, 29, 2,
+            lookup ? QVariant(QStringLiteral("不适用"))
+                   : QVariant(m_fitK));
+    setCell(sheet, 30, 2,
+            lookup ? QVariant(QStringLiteral("不适用"))
+                   : QVariant(m_pn168Candidate));
+    setCell(sheet, 31, 2,
+            lookup ? QVariant(QStringLiteral("不适用"))
+                   : QVariant(m_fitB));
+    setCell(sheet, 32, 2,
+            lookup ? QVariant(QStringLiteral("不适用"))
+                   : QVariant(m_pn169Candidate));
+    setCell(sheet, 33, 2,
+            lookup ? QVariant(QStringLiteral("不适用"))
+                   : QVariant(m_fitRSquared));
+    setCell(sheet, 34, 2, m_maxForwardDeviationN);
+    setCell(sheet, 35, 2, m_maxReverseDeviationN);
+    setCell(sheet, 36, 2,
+            passed ? QStringLiteral("合格") : QStringLiteral("不合格"));
+
+    QAxObject *detailSheet =
+        sheets->querySubObject("Item(const QVariant&)",
+                               QVariant(QStringLiteral("标定明细")));
+    if (detailSheet) {
+        QAxObject *detailRange =
+            detailSheet->querySubObject("Range(const QString&)", "A2:F300");
+        if (detailRange) {
+            detailRange->dynamicCall("ClearContents()");
+            delete detailRange;
+        }
+
+        for (int index = 0; index < m_activeForcePoints.size(); ++index) {
+            const int setForce = m_activeForcePoints.at(index);
+            const int forwardActual = m_testForwardValues.at(index);
+            const int reverseActual = m_testReverseValues.at(index);
+            const double deviation = static_cast<double>(forwardActual) - setForce;
+            setCell(detailSheet, index + 2, 1, index + 1);
+            setCell(detailSheet, index + 2, 2, setForce);
+            setCell(detailSheet, index + 2, 3, forwardActual);
+            setCell(detailSheet, index + 2, 4, deviation);
+            setCell(detailSheet, index + 2, 5, reverseActual);
+            setCell(detailSheet, index + 2, 6,
+                    qAbs(deviation) <= m_calibrationProfile.toleranceN()
+                        ? QStringLiteral("合格")
+                        : QStringLiteral("不合格"));
+        }
+        delete detailSheet;
     }
 
     workbook->dynamicCall("SaveAs(const QString&)", QDir::toNativeSeparators(savePath));
@@ -587,11 +1196,18 @@ void MainWindow::onehaconnectButtonClicked()
 {
     if (serial->isOpen()) {
         m_heartbeatTimer->stop();
+        m_readTimer->stop();
+        tcpSocket->abort();
+        m_sensorSampleValid = false;
+        m_modbusRxBuffer.clear();
         serial->close();
         ui->EHAconnect->setText("连接");
         ui->textEdit->append("已断开串口连接");
-        ui->EHAreset->setEnabled(false);
-        ui->EHAcalibration->setEnabled(false);
+        m_calibrationWritten = false;
+        m_kbFitValid = false;
+        m_testComplete = false;
+        updateKbResultUi();
+        setOperationRunning(false);
         return;
     }
     QString ipAddress = ui->IPaddress->text().trimmed();  // 去除前后空格
@@ -605,23 +1221,21 @@ void MainWindow::onehaconnectButtonClicked()
     }
 
     // 固定端口号为502，连接TCP Socket
-    tcpSocket->connectToHost(ipAddress, 502);  // 端口固定为502
-
-    // tcpSocket->connectToHost("192.168.1.12", 502);
-    // tcpSocket->connectToHost("127.0.0.1", 502);
-    m_readTimer->start(1000);
-    if(tcpSocket->waitForConnected(1000)) {  // 等待1秒连接
+    m_sensorSampleValid = false;
+    m_modbusRxBuffer.clear();
+    m_calibrationWritten = false;
+    m_kbFitValid = false;
+    m_testComplete = false;
+    tcpSocket->connectToHost(ipAddress, 502);
+    if (tcpSocket->waitForConnected(1000)) {
         ui->textEdit->append("力传感器连接成功");
+        m_readTimer->start(1000);
     } else {
         ui->textEdit->append("力传感器连接失败: " + tcpSocket->errorString());
+        ui->textEdit->append("请检查力传感器电源、IP 地址和网络后重新连接。");
+        tcpSocket->abort();
+        return;
     }
-
-
-
-    ui->EHAreset->setEnabled(true);   // 测试用 之后删掉
-    ui->EHAcalibration->setEnabled(true); //测试用 之后删掉
-    ui->EHAzero->setEnabled(false);
-
 
     // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/初始化姿态.png");
     showImage(":/pic/image/Initial pose.png");
@@ -657,9 +1271,18 @@ void MainWindow::onehaconnectButtonClicked()
 
         ui->EHAconnect->setText("断开");
         ui->textEdit->append(QString("已连接到 %1，请根据需求选择下列功能").arg(portName));
+        ui->textEdit->append(
+            QStringLiteral("标定配置：%1，%2，0–%3 N，%4 N 分段，允许误差 ±%5 N。")
+                .arg(m_calibrationProfile.displayName,
+                     m_calibrationProfile.algorithm() == CalibrationAlgorithm::LookupTable
+                         ? QStringLiteral("查表")
+                         : QStringLiteral("K/B 拟合"))
+                .arg(m_calibrationProfile.calibrationMaxForceN)
+                .arg(m_calibrationProfile.stepN)
+                .arg(m_calibrationProfile.toleranceN(), 0, 'f', 1));
         ui->textEdit->append("EHA标定，点击《EHA初始化》按钮，初始化需要设备姿态调整为竖直 不与标定工具接触");
         ui->textEdit->append("EHA检测，点击《EHA检测》按钮，检测需要设备姿态调整为竖直，接触标定工具，下压量保持在滚压设备零点附近");
-        ui->EHAreset->setEnabled(true);  // 连接成功后启用 reset 按钮
+        setOperationRunning(false);
         //EHA连接正常 步骤栏变色 跳到下一步
         applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
         ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
@@ -670,14 +1293,26 @@ void MainWindow::onehaconnectButtonClicked()
         // ui->EHAtest->setEnabled(true);
     } else {
         ui->textEdit->append("错误：无法打开串口！");
-        // ui->textEdit->append(QString("错误详情: %1").arg(serial->errorString()));
+        ui->textEdit->append(QString("错误详情: %1").arg(serial->errorString()));
+        m_readTimer->stop();
+        tcpSocket->abort();
     }
-    ui->EHAreset->setEnabled(true);  // 连接成功后启用 reset 按钮
-
 }
 
 void MainWindow::oneharesetButtonClicked()
 {
+    if (!ensureReadyForCalibration(false)) {
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("EHA 初始化"),
+            QStringLiteral("该操作会复位内部参数、清零质量和力矩基准，并写入初始化参数。\n"
+                           "请确认设备处于安全姿态。是否继续？"))
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    setOperationRunning(true);
     //pn168=150，pn169=0；pn046=150，pn047=0；pn052=150，pn053=0
     ui->textEdit->append("步骤二:EHA初始化。。。");
     sendData(0,9999);
@@ -698,52 +1333,40 @@ void MainWindow::oneharesetButtonClicked()
     sendData(2,81); //数显屏设置为显示位移量
     ui->textEdit->append("设定力初始化完毕\n标定时设备需接触力传感器，并下压至数显屏数值在0(位移零点)左右");
 
-    ui->EHAcalibration->setEnabled(true);
+    m_calibrationWritten = false;
+    m_kbFitValid = false;
+    m_testComplete = false;
+    updateKbResultUi();
+    setOperationRunning(false);
     ui->textEdit->append("初始化完成，机器人下压到位后点击《EHA标定》按钮开始标定");
 }
 void MainWindow::onehacalibrationButtonClicked()
 {
-    if (!serial->isOpen()) {
-        ui->textEdit->append("错误：请先连接串口！");
+    if (!ensureReadyForCalibration(true)) {
         return;
     }
-    settleForce(0);
+
+    setOperationRunning(true);
     ui->textEdit->clear();
-    ui->textEdit->append("步骤三:启动十段力标定流程（机器人已下压到位）...");
 
-    // 十档设定力值：1000 ~ 9999
-    const QVector<quint16> forces = {1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 9999};
-
-    // 正向：1000 → 9999，依次写入 PN140 ~ PN149
-    ui->textEdit->append("\n[正向标定] 1000 → 9999，写入 PN140~PN149:");
-    for (int i = 0; i < forces.size(); ++i) {
-        settleForce(forces[i]);
-        MainWindow::delayMS(2000);
-        quint16 pn = 140 + i;
-        quint16 forceRounded = qRound(sensorforceValue / 10.0);
-        sendData(pn, forceRounded);
-        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
-                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
+    const bool lookup =
+        m_calibrationProfile.algorithm() == CalibrationAlgorithm::LookupTable;
+    const bool ok = lookup ? runLookupCalibration() : runKbCalibration();
+    if (!ok) {
+        settleForce(0);
+        if (lookup) {
+            ui->textEdit->append(
+                QStringLiteral("警告：查表流程可能已经写入部分 Pn140–149 或 "
+                               "Pn180–189，请修复通信后重新执行完整标定。"));
+        }
     }
 
-    // 反向：9999 → 1000，依次写入 PN189 ~ PN180
-    ui->textEdit->append("\n[反向标定] 9999 → 1000，写入 PN189~PN180:");
-    for (int i = forces.size() - 1; i >= 0; --i) {
-        settleForce(forces[i]);
-        MainWindow::delayMS(2000);
-        quint16 pn = 180 + i;
-        quint16 forceRounded = qRound(sensorforceValue / 10.0);
-        sendData(pn, forceRounded);
-        ui->textEdit->append(QString("  设定 %1 → 实际力传感值 %2(%3) → PN%4")
-                                 .arg(forces[i]).arg(sensorforceValue).arg(forceRounded).arg(pn));
-    }
-
-    settleForce(0);
-    sendData(152, 1);
-    sendData(2, 79);
-    ui->textEdit->append("\n十段力标定写入完毕，标定完成");
-    ui->textEdit->append("步骤四：操作机器人，滚压设备调整为水平姿态（数显屏数值为0），执行力矩清零");
-    ui->EHAzero->setEnabled(false);
+    setOperationRunning(false);
+    ui->textEdit->append(
+        ok ? (lookup
+                  ? QStringLiteral("查表标定流程结束。")
+                  : QStringLiteral("K/B 采集完成，请核对结果后手动确认写入。"))
+           : QStringLiteral("标定流程未完整结束。"));
 }
 
 void MainWindow::sendData(quint16 pn, quint16 value)
@@ -798,6 +1421,18 @@ void MainWindow::settleForce(quint16 forceValue)
 
 void MainWindow::onEHAzeroButtonClicked()
 {
+    if (!ensureReadyForCalibration(false)) {
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("力矩清零"),
+            QStringLiteral("将施加 200 N 预紧力后执行 Pn102 力矩清零。\n"
+                           "请确认机械姿态和现场安全。是否继续？"))
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    setOperationRunning(true);
     // showImage("D:/Saiwider/Code/Qt/EHAcontrol/fig/水平姿态.png");
     showImage(":/pic/image/Level pose.png");
     // 1. 力值归零初始化
@@ -809,19 +1444,41 @@ void MainWindow::onEHAzeroButtonClicked()
     sendData(102, 0);
     ui->textEdit->append("步骤四:力矩清零完成 调整滚压设备为竖直状态 观察数显屏数值");
     ui->textEdit->append("步骤五:数显屏为实时力数值 通过填写质量补偿数值 将数显屏数值补偿到0");
-    ui->EHAmassconfirm->setEnabled(true);
     sendData(2, 79);
     MainWindow::delayMS(2000);
     settleForce(0);
-
+    setOperationRunning(false);
 }
 
 void MainWindow::onEHAmassconfirmButtonClicked()
 {
-    int EHAmass = ui->EHAmass->text().toInt();
+    if (!ensureReadyForCalibration(false)) {
+        return;
+    }
+
+    bool ok = false;
+    const int EHAmass = ui->EHAmass->text().trimmed().toInt(&ok);
+    if (!ok || EHAmass < 0 || EHAmass > 65535) {
+        ui->textEdit->append(
+            QStringLiteral("错误：质量补偿必须是 0–65535 的整数。"));
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("写入质量补偿"),
+            QStringLiteral("将写入 Pn160=0、Pn170=%1，并执行 Pn152=1 保存。"
+                           "是否继续？").arg(EHAmass))
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    setOperationRunning(true);
     sendData(160,0);
     sendData(170,EHAmass);
-    ui->textEdit->append("步骤五:质量补偿已录入 观察数显屏数值 显示值为0则标定完毕\n(注:质量补偿可多次录入调试)");
+    sendData(152,1);
+    setOperationRunning(false);
+    ui->textEdit->append(
+        QStringLiteral("步骤五:质量补偿已录入并发送保存命令。"
+                       "观察数显屏数值，显示值为0则标定完毕。"));
 }
 
 void MainWindow::delayMS(int ms)
@@ -836,15 +1493,14 @@ void MainWindow::readModbusData()
 {
     if (tcpSocket->state() != QTcpSocket::ConnectedState) return;
 
-    static quint16 transactionId = 0;
-    transactionId++;
+    ++m_modbusTransactionId;
 
     QByteArray request;
     QDataStream stream(&request, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::BigEndian);
 
     // Modbus TCP请求报文
-    stream << transactionId << (quint16)0x0000 << (quint16)0x0006;
+    stream << m_modbusTransactionId << (quint16)0x0000 << (quint16)0x0006;
     stream << (quint8)0x01 << (quint8)0x03 << (quint16)1542 << (quint16)2;
 
     tcpSocket->write(request);
@@ -852,9 +1508,30 @@ void MainWindow::readModbusData()
 
 void MainWindow::onSocketReadyRead()
 {
-    QByteArray data = tcpSocket->readAll();
-    // ui->textEdit->append(QString("[TCP RX] %1").arg(QString(data.toHex(' '))));
-    parseModbusResponse(data);
+    m_modbusRxBuffer.append(tcpSocket->readAll());
+
+    while (m_modbusRxBuffer.size() >= 6) {
+        const quint16 length =
+            (static_cast<quint8>(m_modbusRxBuffer.at(4)) << 8)
+            | static_cast<quint8>(m_modbusRxBuffer.at(5));
+        const int frameSize = 6 + length;
+        if (length < 2 || length > 260) {
+            m_modbusRxBuffer.remove(0, 1);
+            continue;
+        }
+        if (m_modbusRxBuffer.size() < frameSize) {
+            break;
+        }
+
+        const QByteArray frame = m_modbusRxBuffer.left(frameSize);
+        m_modbusRxBuffer.remove(0, frameSize);
+        parseModbusResponse(frame);
+    }
+
+    if (m_modbusRxBuffer.size() > 1024) {
+        m_modbusRxBuffer.clear();
+        m_sensorSampleValid = false;
+    }
 }
 
 void MainWindow::parseModbusResponse(const QByteArray &data)
@@ -868,64 +1545,70 @@ void MainWindow::parseModbusResponse(const QByteArray &data)
     quint8 unitId, functionCode;
     stream >> transactionId >> protocolId >> length >> unitId >> functionCode;
 
-    if (protocolId != 0x0000 || unitId != 0x01 || length != 0x0007) return;
+    if (protocolId != 0x0000 || unitId != 0x01 || length != 0x0007) {
+        return;
+    }
 
     if (functionCode == 0x03 || functionCode == 0x04) {
         quint8 byteCount;
         stream >> byteCount;
 
-        // 确保有足够的数据
-        if (data.length() >= 11) {  // 9字节头部 + 1字节byteCount + 至少2字节数据
-            // 获取最后两个字节
+        if (byteCount == 4 && data.length() >= 11) {
             quint8 lastByte = data[data.length()-1];
             quint8 secondLastByte = data[data.length()-2];
-            // sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
             sensorforceValue = (quint16)((secondLastByte << 8) | lastByte);
+            m_sensorSampleTime = QDateTime::currentDateTime();
+            m_sensorSampleValid = true;
         }
+    } else if (functionCode & 0x80) {
+        ui->textEdit->append(
+            QStringLiteral("力传感器 Modbus 异常响应，功能码 0x%1。")
+                .arg(functionCode, 2, 16, QLatin1Char('0')).toUpper());
+        m_sensorSampleValid = false;
     }
 }
 
-void MainWindow::on_NextStep1_clicked(bool checked) {
+void MainWindow::on_NextStep1_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
     // ui->STEP1->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
     // ui->STEP1->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
     // ui->STEP2->setStyleSheet("background-color: #D3D3D3;color:#000000;");
 }
 
-void MainWindow::on_NextStep2_clicked(bool checked) {
+void MainWindow::on_NextStep2_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
     // ui->STEP2->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
     // ui->STEP2->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
     // ui->STEP3->setStyleSheet("background-color: #D3D3D3;color:#000000;");
 }
 
-void MainWindow::on_ForwardStep1_clicked(bool checked) {
+void MainWindow::on_ForwardStep1_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 0);
 }
 
-void MainWindow::on_NextStep3_clicked(bool checked) {
+void MainWindow::on_NextStep3_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
     // ui->STEP3->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
     // ui->STEP3->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
     // ui->STEP4->setStyleSheet("background-color: #D3D3D3;color:#000000;");
 }
 
-void MainWindow::on_ForwardStep2_clicked(bool checked) {
+void MainWindow::on_ForwardStep2_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 1);
 }
 
-void MainWindow::on_NextStep4_clicked(bool checked) {
+void MainWindow::on_NextStep4_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 4);
     // ui->STEP4->setIcon(QIcon(":/new/prefix1/icon/confirm_green.png"));
     // ui->STEP4->setStyleSheet("background-color: #43425D;color:#FFFFFF;");
     // ui->STEP5->setStyleSheet("background-color: #D3D3D3;color:#000000;");
 }
 
-void MainWindow::on_ForwardStep3_clicked(bool checked) {
+void MainWindow::on_ForwardStep3_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 2);
 }
 
-void MainWindow::on_ForwardStep4_clicked(bool checked) {
+void MainWindow::on_ForwardStep4_clicked(bool) {
     applyFadeAnimation(ui->tabWidget, ui->tabWidget->currentIndex(), 3);
 }
 
@@ -956,13 +1639,17 @@ void MainWindow::onSerialReadyRead()
                 quint16 val = ((quint8)m_serialRxBuffer[i+5] << 8) | (quint8)m_serialRxBuffer[i+6];
                 if (pn >= 140 && pn <= 149) {
                     m_calibForwardValues[pn - 140] = val;
+                    m_calibParametersSeen.insert(pn);
                 } else if (pn >= 180 && pn <= 189) {
                     m_calibReverseValues[pn - 180] = val;
+                    m_calibParametersSeen.insert(pn);
                 } else if (pn == 170) {
                     m_pn170Value = val;
+                    m_calibParametersSeen.insert(pn);
                 }
                 if (pn == 0x00C7) {  // PN199，最后一个参数
                     m_waitingForCalibParams = false;
+                    m_calibReadComplete = m_calibParametersSeen.size() == 21;
                     emit calibParamsReadFinished();
                     break;
                 }
@@ -982,8 +1669,6 @@ void MainWindow::onSerialReadyRead()
         quint8 b6   = (quint8)m_serialRxBuffer[i+6];
         quint8 b7   = (quint8)m_serialRxBuffer[i+7];
         quint32 rawU = ((quint32)b4 << 24) | ((quint32)b5 << 16) | ((quint32)b6 << 8) | b7;
-        qint32  rawS = (qint32)rawU;
-
         switch (type) {
         case 0x07:
             ui->EHAforceR->setText(QString("%1").arg(rawU));
